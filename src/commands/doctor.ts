@@ -28,7 +28,7 @@ export interface Check {
  * user has no DB configured anywhere; otherwise the caller chose --fast or
  * we failed to connect despite a configured URL.
  */
-export async function runDoctor(engine: BrainEngine | null, args: string[], dbSource?: DbUrlSource) {
+export async function runDoctor(engine: BrainEngine | null, args: string[], dbSource?: DbUrlSource): Promise<number> {
   const jsonOutput = args.includes('--json');
   const fastMode = args.includes('--fast');
   const doFix = args.includes('--fix');
@@ -201,8 +201,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
       checks.push({ name: 'connection', status: 'warn', message: msg });
     }
     const earlyFail1 = outputResults(checks, jsonOutput);
-    process.exit(earlyFail1 ? 1 : 0);
-    return;
+    return earlyFail1 ? 1 : 0;
   }
 
   // DB checks phase — start a single reporter phase so agents see which
@@ -220,8 +219,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     checks.push({ name: 'connection', status: 'fail', message: msg });
     progress.finish();
     const earlyFail2 = outputResults(checks, jsonOutput);
-    process.exit(earlyFail2 ? 1 : 0);
-    return;
+    return earlyFail2 ? 1 : 0;
   }
 
   // 4. pgvector extension
@@ -566,7 +564,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     } catch { /* best-effort */ }
   }
 
-  process.exit(hasFail ? 1 : 0);
+  return hasFail ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------

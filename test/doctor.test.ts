@@ -73,6 +73,18 @@ describe('doctor command', () => {
     expect(source).toContain('GBRAIN_DATABASE_URL');
   });
 
+  test('runDoctor returns an exit code instead of exiting the process', async () => {
+    const { runDoctor } = await import('../src/commands/doctor.ts');
+    const exitCode = await runDoctor(null, ['--fast', '--json']);
+    expect(typeof exitCode).toBe('number');
+    expect(exitCode === 0 || exitCode === 1).toBe(true);
+  });
+
+  test('doctor source does not call process.exit directly', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    expect(source).not.toContain('process.exit(');
+  });
+
   // v0.12.2 reliability wave — doctor detects JSONB double-encode + truncated
   // bodies and points users at the standalone `gbrain repair-jsonb` command.
   // Detection only; repair lives in src/commands/repair-jsonb.ts.

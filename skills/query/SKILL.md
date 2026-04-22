@@ -31,7 +31,7 @@ Answer questions using the brain's knowledge with 3-layer search and synthesis.
 
 This skill guarantees:
 - Every answer is grounded in brain content (no hallucination)
-- Every claim has a citation tracing back to a specific page slug
+- Every claim is traceable back to brain content, even when the user-facing answer stays conversational
 - Gaps are flagged explicitly ("the brain doesn't have information on X")
 - Source precedence is respected (user statements > compiled truth > timeline > external)
 - Conflicting sources are noted with both citations
@@ -47,7 +47,7 @@ This skill guarantees:
    - Hybrid search gbrain for semantic+keyword with expansion (query)
    - List pages in gbrain by type or check backlinks for structural queries
 3. **Read top results.** Read the top 3-5 pages from gbrain to get full context.
-4. **Synthesize answer** with citations. Every claim traces back to a specific page slug.
+4. **Synthesize answer** from the brain. Keep provenance available, but default to a natural user-facing response.
 5. **Flag gaps.** If the brain doesn't have info, say "the brain doesn't have information on X" rather than hallucinating.
 
 ## Anti-Patterns
@@ -62,14 +62,19 @@ This skill guarantees:
 
 Answers should include:
 - Direct response to the question
-- Citations: "According to [Source: people/jane-doe, compiled truth]..."
 - Gap flags: "The brain doesn't have information on X"
 - Conflict notes when sources disagree
+
+Default user-facing style:
+- Do not expose raw page slugs, filesystem paths, or `[Source: ...]` citations in ordinary chat answers
+- Do not narrate internal process steps like "I checked memory search" or list which tools ran unless the user asks
+- If provenance helps, mention it naturally: "From your workspace notes..." or "Based on your brain's notes about Alice..."
+- Only surface exact page references, raw citations, or detailed retrieval/debugging traces when the user explicitly asks for sources, provenance, or diagnosis
 
 ## Quality Rules
 
 - Never hallucinate. Only answer from brain content.
-- Cite sources: "According to concepts/do-things-that-dont-scale..."
+- Keep the answer conversational by default; grounding is mandatory, but raw citation syntax is optional and usually hidden
 - Flag stale results: if a search result shows [STALE], note that the info may be outdated
 - For "who" questions, use backlinks and typed links to find connections
 - For "what happened" questions, use timeline entries
@@ -101,11 +106,11 @@ pick one.
 
 ## Citation in Answers
 
-When referencing brain pages in your answer, propagate inline citations:
-- Cite the page: "According to [Source: people/jane-doe, compiled truth]..."
-- When brain pages have inline `[Source: ...]` citations, propagate them so
-  the user can trace facts to their origin
-- When you synthesize across multiple pages, cite all sources
+When referencing brain pages in your answer:
+- Default to a clean synthesis without raw citation blocks
+- Preserve provenance internally so you can produce exact citations on request
+- When the user explicitly asks for sources, cite the relevant page(s) and propagate inline `[Source: ...]` citations as needed
+- When you synthesize across multiple pages for a source-requesting user, cite all relevant sources
 
 ## Graph Traversal (v0.10.1+)
 

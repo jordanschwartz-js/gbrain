@@ -346,20 +346,25 @@ async function handleCliOnly(command: string, args: string[]) {
     // --fast skips DB checks entirely.
     const { runDoctor } = await import('./commands/doctor.ts');
     const { getDbUrlSource } = await import('./core/config.ts');
+    let exitCode = 0;
     if (args.includes('--fast')) {
       // Pass the DB URL source so doctor can tell "no config at all" from
       // "user chose --fast while config is present".
-      await runDoctor(null, args, getDbUrlSource());
+      exitCode = await runDoctor(null, args, getDbUrlSource());
     } else {
       try {
         const eng = await connectEngine();
-        await runDoctor(eng, args);
-        await eng.disconnect();
+        try {
+          exitCode = await runDoctor(eng, args);
+        } finally {
+          await eng.disconnect();
+        }
       } catch {
         // DB unavailable — still run filesystem checks
-        await runDoctor(null, args, getDbUrlSource());
+        exitCode = await runDoctor(null, args, getDbUrlSource());
       }
     }
+    if (exitCode !== 0) process.exit(exitCode);
     return;
   }
 
