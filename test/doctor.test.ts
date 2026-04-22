@@ -90,4 +90,13 @@ describe('doctor command', () => {
     expect(source).toMatch(/table:\s*'ingest_log'.*col:\s*'pages_updated'/);
     expect(source).toMatch(/table:\s*'files'.*col:\s*'metadata'/);
   });
+
+  test('doctor source documents PGLite-specific skips and current extract guidance', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    expect(source).toContain('Skipped (PGLite local engine loads vector support at startup)');
+    expect(source).toContain('Skipped (PGLite local engine has no role system; RLS applies to Postgres deployments)');
+    expect(source).toContain('Skipped (PGLite write path was unaffected by the v0.12 JSONB double-encode bug)');
+    expect(source).toContain('gbrain extract links --source db && gbrain extract timeline --source db');
+    expect(source).toContain('OPENAI_API_KEY is unset');
+  });
 });

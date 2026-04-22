@@ -128,6 +128,16 @@ describe("checkResolvable — real skills directory", () => {
     }
   });
 
+  test("real skills directory has no non-whitelisted MECE overlaps", () => {
+    const overlaps = report.issues.filter(i => i.type === "mece_overlap");
+    expect(overlaps).toHaveLength(0);
+  });
+
+  test("real skills directory has no DRY delegation violations", () => {
+    const dry = report.issues.filter(i => i.type === "dry_violation");
+    expect(dry).toHaveLength(0);
+  });
+
   test("summary counts are consistent", () => {
     expect(report.summary.reachable + report.summary.unreachable).toBe(report.summary.total_skills);
   });

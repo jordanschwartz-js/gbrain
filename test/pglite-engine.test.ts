@@ -871,6 +871,17 @@ describe('PGLiteEngine: getHealth graph metrics', () => {
     expect(h.timeline_coverage).toBeCloseTo(1 / 3, 2);
   });
 
+
+  test('README scaffolding is excluded from entity-page coverage', async () => {
+    await engine.putPage('people/README', { ...testPage, type: 'person', title: 'People' });
+    await engine.putPage('companies/README', { ...testPage, type: 'company', title: 'Companies' });
+    await engine.addLink('people/alice', 'companies/acme', '', 'works_at');
+    await engine.addTimelineEntry('people/alice', { date: '2026-01-15', summary: 'Joined' });
+    const h = await engine.getHealth();
+    expect(h.link_coverage).toBeCloseTo(1 / 3, 2);
+    expect(h.timeline_coverage).toBeCloseTo(1 / 3, 2);
+  });
+
   test('most_connected lists top entities by link count', async () => {
     await engine.addLink('people/alice', 'companies/acme', '', 'works_at');
     await engine.addLink('people/bob', 'companies/acme', '', 'invested_in');

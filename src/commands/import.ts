@@ -6,6 +6,7 @@ import type { BrainEngine } from '../core/engine.ts';
 import { importFile } from '../core/import-file.ts';
 import { loadConfig } from '../core/config.ts';
 import { createProgress } from '../core/progress.ts';
+import { isSyncable } from '../core/sync.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 
 function defaultWorkers(): number {
@@ -296,7 +297,10 @@ export function collectMarkdownFiles(dir: string): string[] {
       if (stat.isDirectory()) {
         walk(full);
       } else if (entry.endsWith('.md') || entry.endsWith('.mdx')) {
-        files.push(full);
+        const relPath = relative(dir, full);
+        if (isSyncable(relPath)) {
+          files.push(full);
+        }
       }
     }
   }

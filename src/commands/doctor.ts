@@ -226,16 +226,24 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
 
   // 4. pgvector extension
   progress.heartbeat('pgvector');
-  try {
-    const sql = db.getConnection();
-    const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
-    if (ext.length > 0) {
-      checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
-    } else {
-      checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+  if (engine.kind === 'pglite') {
+    checks.push({
+      name: 'pgvector',
+      status: 'ok',
+      message: 'Skipped (PGLite local engine loads vector support at startup)',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const ext = await sql`SELECT extname FROM pg_extension WHERE extname = 'vector'`;
+      if (ext.length > 0) {
+        checks.push({ name: 'pgvector', status: 'ok', message: 'Extension installed' });
+      } else {
+        checks.push({ name: 'pgvector', status: 'fail', message: 'Extension not found. Run: CREATE EXTENSION vector;' });
+      }
+    } catch {
+      checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
     }
-  } catch {
-    checks.push({ name: 'pgvector', status: 'warn', message: 'Could not check pgvector extension' });
   }
 
   // 4b. PgBouncer / prepared-statement compatibility.
@@ -278,23 +286,31 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
 
   // 5. RLS
   progress.heartbeat('rls');
-  try {
-    const sql = db.getConnection();
-    const tables = await sql`
+  if (engine.kind === 'pglite') {
+    checks.push({
+      name: 'rls',
+      status: 'ok',
+      message: 'Skipped (PGLite local engine has no role system; RLS applies to Postgres deployments)',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const tables = await sql`
       SELECT tablename, rowsecurity FROM pg_tables
       WHERE schemaname = 'public'
         AND tablename IN ('pages','content_chunks','links','tags','raw_data',
                            'page_versions','timeline_entries','ingest_log','config','files')
     `;
-    const noRls = tables.filter((t: any) => !t.rowsecurity);
-    if (noRls.length === 0) {
-      checks.push({ name: 'rls', status: 'ok', message: 'RLS enabled on all tables' });
-    } else {
-      const names = noRls.map((t: any) => t.tablename).join(', ');
-      checks.push({ name: 'rls', status: 'warn', message: `RLS not enabled on: ${names}` });
+      const noRls = tables.filter((t: any) => !t.rowsecurity);
+      if (noRls.length === 0) {
+        checks.push({ name: 'rls', status: 'ok', message: 'RLS enabled on all tables' });
+      } else {
+        const names = noRls.map((t: any) => t.tablename).join(', ');
+        checks.push({ name: 'rls', status: 'warn', message: `RLS not enabled on: ${names}` });
+      }
+    } catch {
+      checks.push({ name: 'rls', status: 'warn', message: 'Could not check RLS status' });
     }
-  } catch {
-    checks.push({ name: 'rls', status: 'warn', message: 'Could not check RLS status' });
   }
 
   // 6. Schema version — also surfaces the #218 "postinstall silently failed"
@@ -344,7 +360,16 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     } else if (health.embed_coverage > 0) {
       checks.push({ name: 'embeddings', status: 'warn', message: `${pct}% coverage, ${health.missing_embeddings} missing. Run: gbrain embed --stale` });
     } else {
-      checks.push({ name: 'embeddings', status: 'warn', message: 'No embeddings yet. Run: gbrain embed --stale' });
+      const { loadConfig } = await import('../core/config.ts');
+      const config = loadConfig();
+      const apiKeyConfigured = Boolean(config?.openai_api_key);
+      checks.push({
+        name: 'embeddings',
+        status: 'warn',
+        message: apiKeyConfigured
+          ? 'No embeddings yet. Run: gbrain embed --stale'
+          : 'No embeddings yet. OPENAI_API_KEY is unset. Set it, then run: gbrain embed --stale',
+      });
     }
   } catch {
     checks.push({ name: 'embeddings', status: 'warn', message: 'Could not check embedding health' });
@@ -363,7 +388,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
       checks.push({
         name: 'graph_coverage',
         status: 'warn',
-        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%. Run: gbrain link-extract && gbrain timeline-extract`,
+        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%. Run: gbrain extract links --source db && gbrain extract timeline --source db`,
       });
     }
 
@@ -434,36 +459,44 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   // surface matches `repair-jsonb` (the previous 4-target scan missed a
   // repair target, per #254/Codex review).
   progress.heartbeat('jsonb_integrity');
-  try {
-    const sql = db.getConnection();
-    const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
-      { table: 'pages',         col: 'frontmatter',    expected: 'object' },
-      { table: 'raw_data',      col: 'data',           expected: 'object' },
-      { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
-      { table: 'files',         col: 'metadata',       expected: 'object' },
-      { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
-    ];
-    let totalBad = 0;
-    const breakdown: string[] = [];
-    for (const { table, col } of targets) {
-      progress.heartbeat(`jsonb_integrity.${table}.${col}`);
-      const rows = await sql.unsafe(
-        `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
-      );
-      const n = Number((rows as any)[0]?.n ?? 0);
-      if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+  if (engine.kind === 'pglite') {
+    checks.push({
+      name: 'jsonb_integrity',
+      status: 'ok',
+      message: 'Skipped (PGLite write path was unaffected by the v0.12 JSONB double-encode bug)',
+    });
+  } else {
+    try {
+      const sql = db.getConnection();
+      const targets: Array<{ table: string; col: string; expected: 'object' | 'array' }> = [
+        { table: 'pages',         col: 'frontmatter',    expected: 'object' },
+        { table: 'raw_data',      col: 'data',           expected: 'object' },
+        { table: 'ingest_log',    col: 'pages_updated',  expected: 'array'  },
+        { table: 'files',         col: 'metadata',       expected: 'object' },
+        { table: 'page_versions', col: 'frontmatter',    expected: 'object' },
+      ];
+      let totalBad = 0;
+      const breakdown: string[] = [];
+      for (const { table, col } of targets) {
+        progress.heartbeat(`jsonb_integrity.${table}.${col}`);
+        const rows = await sql.unsafe(
+          `SELECT count(*)::int AS n FROM ${table} WHERE jsonb_typeof(${col}) = 'string'`,
+        );
+        const n = Number((rows as any)[0]?.n ?? 0);
+        if (n > 0) { totalBad += n; breakdown.push(`${table}.${col}=${n}`); }
+      }
+      if (totalBad === 0) {
+        checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
+      } else {
+        checks.push({
+          name: 'jsonb_integrity',
+          status: 'warn',
+          message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
+        });
+      }
+    } catch {
+      checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
     }
-    if (totalBad === 0) {
-      checks.push({ name: 'jsonb_integrity', status: 'ok', message: 'All JSONB columns store objects/arrays' });
-    } else {
-      checks.push({
-        name: 'jsonb_integrity',
-        status: 'warn',
-        message: `${totalBad} row(s) double-encoded (${breakdown.join(', ')}). Fix: gbrain repair-jsonb`,
-      });
-    }
-  } catch {
-    checks.push({ name: 'jsonb_integrity', status: 'warn', message: 'Could not check JSONB integrity' });
   }
 
   // 11. Markdown body completeness (v0.12.3 reliability wave).

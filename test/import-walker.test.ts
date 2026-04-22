@@ -34,6 +34,25 @@ describe('collectMarkdownFiles — symlink containment', () => {
     expect(files).toContain(join(root, 'notes', 'other.md'));
   });
 
+
+  test('skips files that sync marks as unsyncable', () => {
+    writeFileSync(join(root, 'legit.md'), '# legit\n');
+    writeFileSync(join(root, 'README.md'), '# readme\n');
+    writeFileSync(join(root, 'log.md'), '# log\n');
+    writeFileSync(join(root, 'index.md'), '# index\n');
+    writeFileSync(join(root, 'schema.md'), '# schema\n');
+    mkdirSync(join(root, 'people'));
+    writeFileSync(join(root, 'people', 'README.md'), '# people readme\n');
+
+    const files = collectMarkdownFiles(root);
+    expect(files).toContain(join(root, 'legit.md'));
+    expect(files).not.toContain(join(root, 'README.md'));
+    expect(files).not.toContain(join(root, 'log.md'));
+    expect(files).not.toContain(join(root, 'index.md'));
+    expect(files).not.toContain(join(root, 'schema.md'));
+    expect(files).not.toContain(join(root, 'people', 'README.md'));
+  });
+
   test('skips a symlink file pointing outside the brain root', () => {
     // Plant a real secret outside the brain root
     const secretFile = join(secretDir, 'secret.md');
