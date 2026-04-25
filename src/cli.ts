@@ -19,7 +19,7 @@ for (const op of operations) {
 }
 
 // CLI-only commands that bypass the operation layer
-const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'check-resolvable']);
+const CLI_ONLY = new Set(['init', 'upgrade', 'post-upgrade', 'check-update', 'integrations', 'publish', 'check-backlinks', 'lint', 'report', 'import', 'export', 'files', 'embed', 'serve', 'call', 'config', 'doctor', 'migrate', 'eval', 'sync', 'extract', 'features', 'autopilot', 'graph-query', 'jobs', 'agent', 'apply-migrations', 'skillpack-check', 'skillpack', 'resolvers', 'integrity', 'repair-jsonb', 'orphans', 'sources', 'dream', 'check-resolvable', 'routing-eval', 'skillify', 'smoke-test']);
 
 async function main() {
   // Parse global flags (--quiet / --progress-json / --progress-interval)
@@ -315,6 +315,24 @@ async function handleCliOnly(command: string, args: string[]) {
     await runCheckResolvable(args);
     return;
   }
+  if (command === 'routing-eval') {
+    const { runRoutingEvalCli } = await import('./commands/routing-eval.ts');
+    await runRoutingEvalCli(args);
+    return;
+  }
+  if (command === 'skillify') {
+    const { runSkillify } = await import('./commands/skillify.ts');
+    // `args` here is subArgs (command already stripped by caller), so
+    // args[0] is the subcommand (scaffold|check).
+    await runSkillify(args);
+    return;
+  }
+  if (command === 'skillpack') {
+    const { runSkillpack } = await import('./commands/skillpack.ts');
+    // subArgs already has `skillpack` stripped; args[0] is the subcommand.
+    await runSkillpack(args);
+    return;
+  }
   if (command === 'report') {
     const { runReport } = await import('./commands/report.ts');
     await runReport(args);
@@ -359,6 +377,41 @@ async function handleCliOnly(command: string, args: string[]) {
         // DB unavailable — still run filesystem checks
         await runDoctor(null, args, getDbUrlSource());
       }
+    }
+    return;
+  }
+
+  if (command === 'smoke-test') {
+    // Run smoke tests — no DB connection needed, the script handles its own checks
+    const { execSync } = await import('child_process');
+    const { resolve, dirname } = await import('path');
+    const { fileURLToPath } = await import('url');
+    const scriptDir = dirname(fileURLToPath(import.meta.url));
+    const scriptPath = resolve(scriptDir, '..', 'scripts', 'smoke-test.sh');
+    try {
+      execSync(`bash "${scriptPath}"`, { stdio: 'inherit', env: { ...process.env } });
+    } catch (e: any) {
+      // Non-zero exit = some tests failed (exit code = failure count)
+      process.exit(e.status ?? 1);
+    }
+    return;
+  }
+
+  if (command === 'dream') {
+    // Dream mirrors doctor's pattern: filesystem phases run without a DB,
+    // so an engine connection failure is non-fatal. runCycle honestly
+    // reports DB phases as skipped when engine is null.
+    const { runDream } = await import('./commands/dream.ts');
+    let eng: BrainEngine | null = null;
+    try {
+      eng = await connectEngine();
+    } catch {
+      // DB unavailable — lint + backlinks still run against the brain dir.
+    }
+    try {
+      await runDream(eng, args);
+    } finally {
+      if (eng) await eng.disconnect();
     }
     return;
   }
@@ -451,6 +504,11 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'orphans': {
         const { runOrphans } = await import('./commands/orphans.ts');
         await runOrphans(engine, args);
+        break;
+      }
+      case 'sources': {
+        const { runSources } = await import('./commands/sources.ts');
+        await runSources(engine, args);
         break;
       }
     }
@@ -562,6 +620,8 @@ TOOLS
   check-backlinks <check|fix> [dir]  Find/fix missing back-links across brain
   lint <dir|file> [--fix]            Catch LLM artifacts, placeholder dates, bad frontmatter
   orphans [--json] [--count]         Find pages with no inbound wikilinks
+  dream [--dry-run] [--json]         Run the overnight maintenance cycle once (cron-friendly).
+                                     See also: autopilot --install (continuous daemon).
   check-resolvable [--json] [--fix]  Validate skill tree (reachability/MECE/DRY)
   report --type <name> --content ... Save timestamped report to brain/reports/
 

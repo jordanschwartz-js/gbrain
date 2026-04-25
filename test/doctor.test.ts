@@ -94,9 +94,63 @@ describe('doctor command', () => {
   test('doctor source documents PGLite-specific skips and current extract guidance', async () => {
     const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
     expect(source).toContain('Skipped (PGLite local engine loads vector support at startup)');
-    expect(source).toContain('Skipped (PGLite local engine has no role system; RLS applies to Postgres deployments)');
+    expect(source).toContain('Skipped (PGLite — no PostgREST exposure, RLS not applicable)');
     expect(source).toContain('Skipped (PGLite write path was unaffected by the v0.12 JSONB double-encode bug)');
     expect(source).toContain('gbrain extract links --source db && gbrain extract timeline --source db');
     expect(source).toContain('OPENAI_API_KEY is unset');
+  });
+
+  // v0.18 RLS hardening — regression guards for PR #336 + schema backfill.
+  // These are structural assertions on the source string so a silent revert
+  // of the severity or the IN-filter removal fails loudly without a live DB.
+  test('RLS check scans ALL public tables (no hardcoded tablename IN list near the RLS block)', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    const rlsBlock = source.slice(
+      source.indexOf('// 5. RLS'),
+      source.indexOf('// 6. Schema version'),
+    );
+    expect(rlsBlock.length).toBeGreaterThan(0);
+    // Old pattern — must not come back. If it does, we're filtering the scan
+    // to a hardcoded set and every plugin/user table is invisible again.
+    expect(rlsBlock).not.toMatch(/tablename\s+IN\s*\(/);
+    // New semantics: the scan query has no WHERE-IN filter, just schemaname='public'.
+    expect(rlsBlock).toMatch(/FROM\s+pg_tables\b[\s\S]{0,200}schemaname\s*=\s*'public'/);
+  });
+
+  test('RLS check raises status=fail with quoted-identifier remediation SQL', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    const rlsBlock = source.slice(
+      source.indexOf('// 5. RLS'),
+      source.indexOf('// 6. Schema version'),
+    );
+    // Severity upgraded from 'warn' to 'fail' so `gbrain doctor` exits 1 on gaps.
+    expect(rlsBlock).toMatch(/status:\s*'fail'/);
+    // Remediation SQL uses quoted identifiers — safe for names with hyphens,
+    // reserved words, mixed case.
+    expect(rlsBlock).toContain('ALTER TABLE "public"."');
+    expect(rlsBlock).toContain('ENABLE ROW LEVEL SECURITY');
+  });
+
+  test('RLS check skips on PGLite (no PostgREST, not applicable)', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    const rlsBlock = source.slice(
+      source.indexOf('// 5. RLS'),
+      source.indexOf('// 6. Schema version'),
+    );
+    expect(rlsBlock).toMatch(/engine\.kind\s*===\s*'pglite'/);
+    expect(rlsBlock).toContain('PGLite');
+  });
+
+  test('RLS check reads pg_description and recognizes the GBRAIN:RLS_EXEMPT escape hatch', async () => {
+    const source = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
+    const rlsBlock = source.slice(
+      source.indexOf('// 5. RLS'),
+      source.indexOf('// 6. Schema version'),
+    );
+    expect(rlsBlock).toContain('obj_description');
+    expect(rlsBlock).toContain('GBRAIN:RLS_EXEMPT');
+    // The regex must require a non-empty reason= segment. "Blood" is in the
+    // requirement to write a real justification, not just the prefix.
+    expect(rlsBlock).toMatch(/reason=/);
   });
 });
