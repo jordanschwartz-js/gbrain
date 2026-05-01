@@ -2,6 +2,222 @@
 
 All notable changes to GBrain will be documented in this file.
 
+## [0.25.0] - 2026-04-26
+
+## **Contributors can now benchmark retrieval changes against real captured queries before merging.**
+## **`GBRAIN_CONTRIBUTOR_MODE=1` turns on capture; `gbrain eval replay` is the dev loop.**
+
+v0.20 (gbrain-evals extraction) and v0.21 (Cathedral II) gave gbrain its install surface back and turned code into a first-class graph. The remaining gap was data: `amara-life`, the fictional 418-item corpus over in gbrain-evals, is great for reproducibility but not for catching regressions against the queries your agents *actually* serve. v0.25 ships the substrate: with `GBRAIN_CONTRIBUTOR_MODE=1` set, every `query` and `search` call through MCP, CLI, or the subagent tool-bridge records into a new `eval_candidates` table. `gbrain eval export` streams the rows as NDJSON. `gbrain eval replay --against <ndjson>` re-runs each captured query against your current build and prints three numbers: mean Jaccard@k, top-1 stability, and latency Δ. Point gbrain-evals at the stream and you have BrainBench-Real on every release. Run replay locally and you have a regression gate on every retrieval PR.
+
+Capture is **off by default**. Production users get a quiet brain — no surprise data accumulation, no privacy footgun. Contributors flip it on with one shell rc line: `export GBRAIN_CONTRIBUTOR_MODE=1`. From that shell forward, every query/search lands in `eval_candidates`. PII is scrubbed at write time (emails, phones, SSN, Luhn-verified credit cards, JWTs, bearer tokens). Queries over 50KB get rejected. RLS matches the v0.18.1 / v0.21.0 posture ... new tables get enabled on Postgres, gated on BYPASSRLS so it never locks an operator out of their own data. `gbrain doctor` surfaces silent capture failures cross-process so if something stops working you see it in health checks, not three weeks later when the replay numbers look weird.
+
+Cathedral II (v0.21.0) callers are unaffected. `hybridSearch` still returns `Promise<SearchResult[]>` ... meta arrives via an optional `onMeta` callback in `HybridSearchOpts`, used only by the op-layer capture wrapper to record what hybridSearch *actually* did (vector ran or fell back, expansion fired or didn't, post-auto-detect detail).
+
+### The numbers that matter
+
+Measured on this branch's diff against v0.21.0:
+
+| Metric | v0.21.0 | v0.25.0 | Δ |
+|---|---|---|---|
+| Real-query capture | none | every MCP/CLI/subagent `query` + `search` | **the whole feature** |
+| PII classes redacted at write | 0 | 6 (email, phone, SSN, CC+Luhn, JWT, bearer) | ... |
+| Schema columns per captured row | ... | 16 (tool, query, slugs, chunks, source_ids, expand_enabled, detail, detail_resolved, vector_enabled, expansion_applied, latency, remote, job_id, subagent_id, created_at, id) | ... |
+| `hybridSearch` return shape | `Promise<SearchResult[]>` | `Promise<SearchResult[]>` (unchanged) | 0 break |
+| `hybridSearch` opts surface | existing | + `onMeta?: (m: HybridSearchMeta) => void` | additive |
+| BrainEngine methods | shipped Cathedral II surface | +5 eval-capture | **BREAKING for custom engines** |
+| Public subpath exports | 17 | 17 (now contract-tested) | 0 drift |
+| Default capture posture | n/a | OFF for users, ON via `GBRAIN_CONTRIBUTOR_MODE=1` | privacy-positive default |
+| Dev-loop tooling for retrieval PRs | none in-tree | `gbrain eval replay --against <ndjson>` | the regression gate |
+| New tests | ... | 144 (14 engine round-trip + 17 scrubber + 27 capture module + 8 hybrid meta + 10 op-layer capture + 9 export + 5 prune + 30 public-exports + 16 replay + 8 v31-migrate) | ... |
+
+### What this means for you
+
+**Brain operators (the 99%):** run `gbrain upgrade`. Nothing changes — capture stays off, your brain stays quiet. The substrate is in place if you ever want to turn it on (e.g. to debug a retrieval issue), but you don't have to.
+
+**Contributors / maintainers:** add `export GBRAIN_CONTRIBUTOR_MODE=1` to your shell rc. Every `query`/`search` from then on writes to `eval_candidates`. After a week of dogfooding, snapshot with `gbrain eval export --since 7d > real.ndjson` and `gbrain eval replay --against real.ndjson` against your branch to gate retrieval changes. To opt out per-brain regardless of the env var: write `{"eval":{"capture":false}}` to `~/.gbrain/config.json`.
+
+**Anyone calling `hybridSearch` directly:** no change required. The return type is still `Promise<SearchResult[]>`. If you want the new meta side-channel, pass `onMeta: (m) => { ... }` in opts — otherwise leave it undefined and pay no cost.
+
+**Downstream TypeScript consumers implementing their own BrainEngine:** five new methods need implementations ... `logEvalCandidate`, `listEvalCandidates`, `deleteEvalCandidatesBefore`, `logEvalCaptureFailure`, `listEvalCaptureFailures`. Return types are in `src/core/types.ts`. This is why v0.25.0 is a minor bump.
+
+## To take advantage of v0.25.0
+
+**If you're a regular gbrain user:** `gbrain upgrade` is enough. Capture stays off, your brain stays quiet, nothing else changes. The substrate exists if you ever want to opt in (write `{"eval":{"capture":true}}` to `~/.gbrain/config.json`), but you don't have to.
+
+**If you're a contributor or maintainer working on retrieval:**
+
+1. **Apply the migration** (idempotent; `gbrain upgrade` does this automatically):
+   ```bash
+   gbrain apply-migrations --yes
+   ```
+
+2. **Turn on capture** by adding one line to your `~/.zshrc` or `~/.bashrc`:
+   ```bash
+   export GBRAIN_CONTRIBUTOR_MODE=1
+   ```
+   Reload your shell (`source ~/.zshrc`) or open a new terminal.
+
+3. **Verify the tables exist + capture is healthy:**
+   ```bash
+   gbrain query "any test query" >/dev/null
+   psql $DATABASE_URL -c 'SELECT count(*) FROM eval_candidates'  # > 0 means capture is running
+   gbrain doctor   # should show "eval_capture: No capture failures in the last 24h"
+   ```
+
+4. **Dogfood for a week, then run the dev loop:**
+   ```bash
+   gbrain eval export --since 7d > baseline.ndjson
+   # ... make a retrieval change ...
+   gbrain eval replay --against baseline.ndjson  # mean Jaccard@k, top-1 stability, latency Δ
+   ```
+
+   See [`docs/eval-bench.md`](https://github.com/garrytan/gbrain/blob/master/docs/eval-bench.md) for the full guide and CI integration snippet.
+
+5. **If something looks wrong:** `gbrain doctor` names the `eval_capture_failures` breakdown by reason. File an issue with the breakdown + your config shape at https://github.com/garrytan/gbrain/issues.
+
+### Itemized changes
+
+- **`GBRAIN_CONTRIBUTOR_MODE=1` env var gates capture.** Default flipped from on-for-everyone to off-unless-opted-in. Resolution order: explicit `eval.capture` config wins both directions, then env var, then off. Production users get a quiet brain by default; contributors flip the env var in `.zshrc` and unlock the full export → replay loop. README + CONTRIBUTING document the flag prominently.
+- v31 migration: `eval_candidates` + `eval_capture_failures` on both Postgres + PGLite, RLS gated on BYPASSRLS, CHECK constraints + indexes
+- Op-layer capture wrapper in `src/core/operations.ts` (covers MCP + CLI + subagent tool-bridge from one site)
+- PII scrubber in `src/core/eval-capture-scrub.ts` (6 regex families, adversarial-input safe)
+- Cross-process audit via `eval_capture_failures` + `gbrain doctor` 24h breakdown
+- `gbrain eval export` (NDJSON, schema_version:1, EPIPE-safe) + `gbrain eval prune` (explicit retention)
+- `gbrain eval replay --against <ndjson>` — contributor-facing dev loop. Reads a captured snapshot, re-runs every `query` / `search` against the current brain, prints mean Jaccard@k between captured + current `retrieved_slugs`, top-1 stability rate, and latency Δ. JSON mode (`schema_version: 1`) for CI gating, top-regressions table for human eyeballs. Closes the gap between "data captured" and "data used to gate a PR."
+- `docs/eval-bench.md` — contributor guide that walks the 4-command loop (export → change → replay → diff), defines metrics (Jaccard@k, top-1 stability, latency Δ) with healthy ranges, lists the source paths that should trigger a re-run, and shows how to wire it into CI. Linked from CONTRIBUTING.md.
+- `CONTRIBUTING.md` adds a "Running real-world eval benchmarks (touching retrieval code)" section so PRs that change retrieval have an obvious replay path. Maintainer reviews can ask "did you run replay?" instead of writing a custom benchmark per PR.
+- `hybridSearch` adds `onMeta?: (m) => void` to opts (Cathedral II callers unaffected)
+- `BrainEngine` gains 5 methods (breaking-interface for custom engines, drives v0.25.0 minor bump)
+- `test/public-exports.test.ts` + `scripts/check-exports-count.sh` lock the 17-subpath public surface
+- Config gains `eval: {capture?, scrub_pii?}` (file-plane only); env var `GBRAIN_CONTRIBUTOR_MODE=1` is the contributor-facing toggle that doesn't require editing JSON
+- `listEvalCandidates` orders `created_at DESC, id DESC` (deterministic export windows)
+- `docs/eval-capture.md` — stable NDJSON schema reference for gbrain-evals
+- `gbrain doctor` `eval_capture` check now distinguishes pre-v31 missing-table (status: ok / skipped) from RLS-denied SELECT or transient DB error (status: warn) — the diagnostic that surfaces a misconfigured RLS role no longer goes silent
+- `hybridSearch.onMeta` callback wrapped in try/catch — a throwing user-supplied callback can't break the search hot path (defensive across the public `gbrain/search/hybrid` surface)
+- +144 unit tests across 9 new files (eval-candidates 14, eval-capture-scrub 17, eval-capture 27, eval-export 9, eval-prune 5, eval-replay 16, hybrid-meta 8, mcp-eval-capture 10, public-exports 30) plus 8 v31-shape checks added to `test/migrate.test.ts`. 0 regressions across the full suite (198 v0.25.0-related tests pass cleanly).
+
+## [0.24.0] - 2026-04-26
+
+## **The skillify loop stops lying. Privacy guard runs, `--llm` is honest, ghost rows go away.**
+## **Plus: Tier 2 LLM-skill tests now block every PR, not just the nightly cron.**
+
+v0.19.0 shipped four new CLI commands (`skillify`, `skillpack`, `routing-eval`, `skillify-check`) and got rave coverage. v0.24.0 is the production-hardening pass on top of that: every public contract that lied about itself, every silent footgun, every CI guard that wasn't wired up. No new features. No new commands. Just the unsexy fixes that turn a feature release into a production release.
+
+The biggest save: the skillpack installer would have silently deleted your skills. The original v0.19 design's "rebuild managed block" path was load-bearing wrong — a user installing `alpha` then later running `gbrain skillpack install beta` alone would have lost `alpha`. Codex caught it during cross-model review. The fix preserves cumulative-install semantics via a receipt comment in the fence: `<!-- gbrain:skillpack:manifest cumulative-slugs="alpha,beta,..." -->`. Old fences upgrade silently. User-added rows survive with a stderr warning telling the operating agent to investigate. `install --all` is now the only path that prunes; per-skill install never destroys what it didn't install.
+
+The biggest unsexy fix: `gbrain routing-eval --llm` was a documented feature that did nothing. README, CHANGELOG, and CLI help all said it ran an LLM tie-break layer. The code returned structural-only results with no warning, no error, no signal at all. v0.24.0 makes the flag honest across all four touchpoints. Until the LLM layer ships, `--llm` emits a stderr placeholder notice and runs structural. CI logs see it. Docs match the code. The release notes don't lie.
+
+The CI fix nobody asked for: `scripts/check-privacy.sh` exists in the repo to enforce the OpenClaw fork-name ban from `CLAUDE.md:550`. It was never wired into anything. v0.24.0 prepends it to `package.json`'s `"test"` chain alongside the other `check-*.sh` guards. A regression test asserts the wiring stays. The first run caught 5 banned-name references that had been sitting in master's `CHANGELOG.md`, `src/cli.ts`, `src/commands/sync.ts`, and `skills/migrations/v0.19.0.md` for releases — fixed in the same wave.
+
+### The numbers that matter
+
+Counted against this branch's review trail and the local test suite:
+
+| Metric | BEFORE v0.24.0 | AFTER v0.24.0 | Δ |
+|---|---|---|---|
+| `routing-eval --llm` behavior matches docs | no | yes | fixed |
+| Public-contract drift surfaces fixed | 4 (README, CHANGELOG, CLI help, runtime) | 0 | −4 |
+| `gbrain skillpack install <name>` preserves prior installs | yes (was a happy accident) | yes (with receipt + regression test) | locked |
+| Regression test guarding cumulative-install semantics | none | `test 8a` ("install alpha; then install beta; assert both") | +1 |
+| Banned-name leaks in tracked files | 5 (master state) | 0 | −5 |
+| `check-privacy.sh` runs in CI | never | every PR (via `bun run test`) | wired |
+| Tier 2 LLM-skill E2E gates each PR | no (nightly cron only) | yes | wired |
+| Stale `v0.17/v0.18` version labels in new code | 7 sites across 5 files | 0 | −7 |
+| Skillify scaffold idempotency under hand-edited resolver | backtick-only detection | backtick + quoted + bare | fixed |
+
+Cross-model review trail: **CEO + Eng + Codex outside voice**. 14 user decisions captured, 0 unresolved, 1 critical Codex catch (the cumulative-install regression that would have shipped). Two-model review caught a one-model-blind spot. The receipt design is in `src/core/skillpack/installer.ts:applyManagedBlock`.
+
+### What this means for builders
+
+Nothing breaks. `gbrain upgrade` is the path. Existing brains: no schema migration. Existing AGENTS.md fences without a receipt comment auto-upgrade silently on the next `gbrain skillpack install` (one-time clean rebuild, no warnings). User-added skill rows inside the fence now survive reinstalls with a clear stderr breadcrumb: `[skillpack] unknown row in managed block: "<slug>" — Investigate: user-added skill, hand-edited fence, or typo?`
+
+If you ship custom CI: `bun run test` now gates `check-privacy.sh` alongside the existing `check-jsonb-pattern.sh`, `check-progress-to-stdout.sh`, and `check-wasm-embedded.sh`. If you grepped through gbrain's source in your own CI, no surface change. If you previously ran `gbrain routing-eval --llm` expecting an LLM pass, you'll now see a stderr line telling you what's actually happening and your scripts keep working — exit code is still 0/1 based on structural results. Tier 2 (`test/e2e/skills.test.ts`) now runs on every PR using existing repo secrets. Adds ~3-5 min per PR for real protection against LLM-adjacent regressions.
+
+## To take advantage of v0.24.0
+
+`gbrain upgrade` does this automatically. To verify:
+
+1. **Binary version:**
+   ```bash
+   gbrain --version   # should say 0.24.0
+   ```
+2. **`--llm` honesty:**
+   ```bash
+   gbrain routing-eval --llm 2>&1 | grep -i placeholder
+   # expect: "[routing-eval] --llm flag is a placeholder in this release..."
+   ```
+3. **Skillpack receipt + cumulative semantics:**
+   ```bash
+   gbrain skillpack install <name>
+   grep "gbrain:skillpack:manifest cumulative-slugs" $OPENCLAW_WORKSPACE/AGENTS.md
+   # expect a receipt line listing every gbrain-installed slug
+   ```
+4. **Privacy guard wired:**
+   ```bash
+   grep "check-privacy.sh" package.json
+   # expect a hit in scripts.test
+   ```
+5. **If anything fails,** file an issue at https://github.com/garrytan/gbrain/issues with the output of `gbrain doctor` and which step broke.
+
+No schema migration. Existing brains work unchanged.
+
+### Itemized changes
+
+#### Fixed
+
+- **`gbrain routing-eval --llm`** is no longer a silent no-op. CLI emits a stderr placeholder notice; `--json` mode preserves clean stdout JSON with the warning on stderr only (no bleed). README:294, CHANGELOG entry, and CLI help text all rewritten to match the actual behavior. Tests in `test/routing-eval-cli.test.ts`.
+- **Skillpack installer** now embeds a receipt comment (`<!-- gbrain:skillpack:manifest cumulative-slugs="..." version="..." -->`) inside the managed-block fence on every install. Per-skill installs accumulate via union(prior receipt, this-call slugs); `install --all` prunes slugs no longer in the bundle (the only prune path). Unknown rows inside the fence (user hand-adds, third-party bundles, typos) survive reinstalls with a stderr `Investigate:` breadcrumb. Pre-v0.24.0 fences upgrade silently on first install. Tests in `test/skillpack-install.test.ts` cover all four paths including the regression-guard "install alpha; install beta; assert both present."
+- **`gbrain skillify scaffold --force`** no longer creates duplicate resolver rows when the existing row uses non-backticked path forms. The detection regex now matches backticked, single-quoted, double-quoted, and bare forms, with anchored boundaries to prevent false-matching shared-prefix slugs (e.g., `demo` vs `demo-extended`). Tests in `test/skillify-scaffold.test.ts`.
+- **5 banned OpenClaw fork-name leaks** scrubbed from public artifacts (`CHANGELOG.md`, `skills/migrations/v0.19.0.md`, `src/cli.ts`, `src/commands/sync.ts`). All originated in earlier releases when the privacy script existed but wasn't wired to CI. Replacements per `CLAUDE.md:550` (origin-story → "Garry's OpenClaw"; reader-facing → "your OpenClaw").
+- **Stale `v0.17`/`v0.18` version labels** removed from 5 files (`src/core/routing-eval.ts`, `src/core/filing-audit.ts`, `src/commands/check-resolvable.ts`, `src/commands/skillify.ts`, `src/commands/skillpack.ts`). Replaced with version-agnostic phrasing or current-release references.
+
+#### Changed
+
+- **`package.json` `"test"` script** now prepends `scripts/check-privacy.sh` to the existing chain. Test failure if the banned fork name appears anywhere in tracked files.
+- **`.github/workflows/e2e.yml`** Tier 2 job (`test/e2e/skills.test.ts`, requires `OPENAI_API_KEY` + `ANTHROPIC_API_KEY`) promoted from schedule-only to required per-PR CI. Same secrets, same install path, same workflow YAML structure — just removed the `if: github.event_name == 'schedule' or workflow_dispatch` guard.
+
+#### Added (tests)
+
+- **`test/routing-eval-cli.test.ts`** (4 cases) — `--llm` placeholder behavior across human + JSON modes, exit-code preservation, regression guard for the silent-no-op state.
+- **`test/privacy-script-wired.test.ts`** (3 cases) — asserts `check-privacy.sh` exists and is executable, asserts `package.json` `scripts.test` references it, asserts the `check:privacy` convenience alias is present.
+- **`test/skillpack-install.test.ts`** (+4 cases) — cumulative-install regression guard, full-bundle prune semantics, unknown-row preserve+warn, pre-v0.24 upgrade path. Total 30 cases for the installer.
+- **`test/skillify-scaffold.test.ts`** (+4 cases) — bare/quoted/single-quoted resolver rows + shared-prefix slug isolation. Total 18 cases for scaffold.
+
+#### Deferred
+
+- LLM tie-break layer for `routing-eval --llm` — placeholder ships in v0.24.0, full implementation is a future release. Code already accepts the flag.
+- `gbrain skillpack forget <name>` — explicit uninstall command. v0.24.0 covers the minimum (managed-block prune via `install --all`). Tracked in `TODOS.md`.
+- PID-liveness check in installer lock — current behavior (mtime-based stale detection + `--force-unlock` opt-in) is conservative; PID liveness is a v0.24.x ergonomic. Tracked.
+
+### Cross-model review credit
+
+This release's quality is directly attributable to running `/plan-ceo-review` + `/plan-eng-review` + `/codex review` in sequence on the v0.19.0 production-readiness audit. Codex caught one critical and three high findings the in-skill review missed: cumulative-install regression (load-bearing), `--llm` public-contract drift (4-surface scrub), Tier 2 framing as unowned dependency, and 6.5 hours of guesswork named files in the flake-diagnosis plan. The cross-model agreement on every fix is the signal that turns "ship the demo path" into "ship the production path."
+## [0.23.2] - 2026-04-30
+
+**The dream cycle now stamps every page it writes. The guard checks for the stamp. No content guessing, no false positives.**
+
+The v0.23.1 prefix-string guard had two flaws caught by a codex review of the v0.23.2 plan. Real serialized brain pages do not always contain their own slug in the body. The synth prompt produces `[Alice](people/alice)` references far more often than the page's own slug, and `serializeMarkdown` does not embed the slug anywhere by default. So the heuristic could miss real dream output. And real conversation transcripts often DO mention brain slugs (`"earlier I wrote about wiki/personal/reflections/identity..."`), so the heuristic dropped legitimate transcripts silently.
+
+v0.23.2 swaps content inference for explicit identity. Every page the synthesize phase writes now gets `dream_generated: true` stamped into its YAML frontmatter at render time. The self-consumption guard checks for that field. CRLF and BOM tolerated. Whitespace and case variants tolerated. Cannot drift, cannot false-positive on user text, cannot miss real output.
+
+`gbrain dream --unsafe-bypass-dream-guard` is a new explicit escape hatch for power users who really do want to re-process a dream-generated page (rare, mostly testing). A loud stderr warning fires every time it runs. The flag is intentionally NOT tied to `--input` because that would let any caller silently re-trigger the loop bug.
+
+The configurable verdict model from v0.23.1 stays. `gbrain config set dream.synthesize.verdict_model claude-sonnet-4-6` still works, with new unit-test coverage asserting the override actually reaches `client.create({ model })`.
+
+### Itemized changes
+
+#### Fixed
+- `src/core/cycle/synthesize.ts`: `renderPageToMarkdown` (now exported) stamps `dream_generated: true` and `dream_cycle_date` into every reverse-write. `writeSummaryPage` does the same when building the dream-cycle summary index. The DB-stored frontmatter persists the marker across re-renders.
+- `src/core/cycle/transcript-discovery.ts`: replaces v0.23.1's `DREAM_OUTPUT_SLUGS` content-prefix list with `DREAM_OUTPUT_MARKER_RE`, anchored at frontmatter open with optional BOM and CRLF tolerance. Runs in both `discoverTranscripts` and `readSingleTranscript`. Stderr log fires when the guard skips a file (no more silent skips).
+- `src/core/cycle/synthesize.ts`: `judgeSignificance` and `JudgeClient` are now exported; `judgeSignificance` accepts a `verdictModel` parameter (default `claude-haiku-4-5-20251001`) loaded from `dream.synthesize.verdict_model` via `loadSynthConfig`.
+
+#### Added
+- `gbrain dream --unsafe-bypass-dream-guard` CLI flag. Plumbed through `runCycle.synthBypassDreamGuard` → `SynthesizePhaseOpts.bypassDreamGuard` → `discoverTranscripts({bypassGuard})` and `readSingleTranscript({bypassGuard})`. Fires a loud stderr warning at phase entry when set. Never auto-applied for `--input`.
+
+#### Tests
+- 12 new test cases in `test/cycle-synthesize.test.ts`:
+  - `self-consumption guard (v0.23.2 marker-based)`: REGRESSION fixture built from a real `Page → renderPageToMarkdown → isDreamOutput` round-trip; legitimate user note citing a slug is NOT skipped; CRLF + BOM tolerated; whitespace and case variants tolerated; `false`/absent values do NOT match; `dream_generatedfoo` (no word boundary on key) does NOT match; marker buried past 2000 chars does NOT trigger (perf bound); `bypassGuard=true` overrides; `discoverTranscripts` respects the bypass; `DREAM_OUTPUT_MARKER_RE` is anchored at byte 0.
+  - `judgeSignificance`: passes verdict_model override to `client.create`; defaults to `claude-haiku-4-5-20251001` when omitted; returns `worth_processing=false` on unparseable judge output.
 ## [0.23.1] - 2026-04-30
 
 **`bun run ci:local` runs the full CI gate on your laptop, 4-way sharded, in ~100 seconds warm. Doc-only diffs go in 5 seconds.**
@@ -738,7 +954,7 @@ If `gbrain sync` blocks with parse failures, the breakdown tells you what to fix
 - DB-layer error patterns (`DB_DUPLICATE_KEY`, `STATEMENT_TIMEOUT`) check BEFORE YAML patterns in the classifier, so Postgres errors don't get YAML-labeled.
 - Frontmatter regex patterns rewritten to match canonical messages from `collectValidationErrors()` (`File is empty...`, `No closing --- delimiter found`, `Frontmatter block is empty`) instead of aspirational code-token strings (`missing.*open`) that never appeared in practice.
 
-Closes #500.
+Closes #500. Eng-review plan: `~/.claude/plans/then-codex-synchronous-toucan.md` (codex outside-voice agreed on all 7 findings).
 
 ## [0.22.8] - 2026-04-28
 
@@ -887,6 +1103,8 @@ Then point Claude Desktop, claude.ai/code, or any MCP client at `http://your-tun
 6. **If `gbrain serve --http` exits with "Postgres engine required":** PGLite is local-only by design. Either keep using stdio (`gbrain serve`) for local agents, or migrate to Postgres (`gbrain migrate --to supabase`).
 
 If anything breaks: `gbrain doctor`, `~/.gbrain/upgrade-errors.jsonl` (if present), and please file an issue at https://github.com/garrytan/gbrain/issues with both.
+
+
 
 ## [0.22.6.1] - 2026-04-26
 
@@ -1333,7 +1551,7 @@ Two SearchOpts additions plumb hard-exclude through the API: `exclude_slug_prefi
 
 ### The numbers that matter
 
-A new BrainBench category — **Cat 13b: Source Swamp Resistance** — ships in the sibling [gbrain-evals](https://github.com/garrytan/gbrain-evals) repo. The corpus is 20 pages: 10 short opinionated `originals/` pages and 10 long `wintermute/chat/` dumps that mention the same multi-word phrases at higher per-byte density. 30 hand-curated queries assert the curated page wins.
+A new BrainBench category — **Cat 13b: Source Swamp Resistance** — ships in the sibling [gbrain-evals](https://github.com/garrytan/gbrain-evals) repo. The corpus is 20 pages: 10 short opinionated `originals/` pages and 10 long `openclaw/chat/` dumps that mention the same multi-word phrases at higher per-byte density. 30 hand-curated queries assert the curated page wins.
 
 | gbrain version                       | Top-1 hit | Top-3 hit | Swamp@top |
 |--------------------------------------|-----------|-----------|-----------|
@@ -1347,17 +1565,17 @@ The world-v1 corpus (BrainBench Cats 1+2 retrieval, 145 relational queries) is u
 
 ### What this means for you
 
-If your brain's biggest directories are chat dumps, daily logs, or X archives, search just got dramatically better for the topic queries you actually run. If you depend on chat surfacing for date-framed questions ("what did we discuss last week"), nothing changed ... the intent classifier routes those to `detail=high` which bypasses source-boost. If you want a different boost map, set `GBRAIN_SOURCE_BOOST=originals/:1.8,wintermute/chat/:0.3` and ship.
+If your brain's biggest directories are chat dumps, daily logs, or X archives, search just got dramatically better for the topic queries you actually run. If you depend on chat surfacing for date-framed questions ("what did we discuss last week"), nothing changed ... the intent classifier routes those to `detail=high` which bypasses source-boost. If you want a different boost map, set `GBRAIN_SOURCE_BOOST=originals/:1.8,openclaw/chat/:0.3` and ship.
 
 ## To take advantage of v0.22.0
 
 `gbrain upgrade` should do this automatically. No DB migration is needed ... the change is purely a SQL ranking refactor on existing tables.
 
-1. **No manual migration step required.** The new ranking is on by default. Defaults are tuned for a brain with the canonical `originals/`, `concepts/`, `writing/`, `meetings/`, `daily/`, `media/x/`, `wintermute/chat/` shape.
+1. **No manual migration step required.** The new ranking is on by default. Defaults are tuned for a brain with the canonical `originals/`, `concepts/`, `writing/`, `meetings/`, `daily/`, `media/x/`, `openclaw/chat/` shape.
 2. **Tune for your brain (optional):**
    ```bash
    # Stronger originals boost, harder chat dampening
-   export GBRAIN_SOURCE_BOOST="originals/:1.8,wintermute/chat/:0.3"
+   export GBRAIN_SOURCE_BOOST="originals/:1.8,openclaw/chat/:0.3"
    # Add a directory to the hard-exclude list
    export GBRAIN_SEARCH_EXCLUDE="scratch/,private/"
    ```
@@ -1378,7 +1596,7 @@ If your brain's biggest directories are chat dumps, daily logs, or X archives, s
 
 #### Source-aware retrieval
 
-- New module `src/core/search/source-boost.ts` ships the default boost map (`originals/` 1.5, `concepts/` 1.3, `writing/` 1.4, `people/companies/deals/` 1.2, `daily/` 0.8, `media/x/` 0.7, `wintermute/chat/` 0.5) and the four default hard-exclude prefixes (`test/`, `archive/`, `attachments/`, `.raw/`). Both knobs override via env (`GBRAIN_SOURCE_BOOST`, `GBRAIN_SEARCH_EXCLUDE`) or per-call SearchOpts.
+- New module `src/core/search/source-boost.ts` ships the default boost map (`originals/` 1.5, `concepts/` 1.3, `writing/` 1.4, `people/companies/deals/` 1.2, `daily/` 0.8, `media/x/` 0.7, `openclaw/chat/` 0.5) and the four default hard-exclude prefixes (`test/`, `archive/`, `attachments/`, `.raw/`). Both knobs override via env (`GBRAIN_SOURCE_BOOST`, `GBRAIN_SEARCH_EXCLUDE`) or per-call SearchOpts.
 - New module `src/core/search/sql-ranking.ts` is a pair of pure SQL-fragment builders shared between Postgres and PGLite engines. `buildSourceFactorCase` emits a longest-prefix-match CASE expression and returns literal `'1.0'` when `detail === 'high'` so temporal queries bypass source-boost. `buildHardExcludeClause` emits `NOT (col LIKE 'p1%' OR col LIKE 'p2%')` ... OR-chain wrapped in NOT, never `NOT LIKE ALL/ANY` (those don't express set-exclusion). LIKE meta-character escape covers `%`, `_`, AND `\` (backslash matters because it's Postgres LIKE's default escape char). Single-quote doubling renders SQL-injection-style inputs inert.
 - `src/core/postgres-engine.ts` and `src/core/pglite-engine.ts` ... three methods wired: `searchKeyword` (chunk-grain CTE → DISTINCT ON page dedup, multiplies ts_rank by source-factor), `searchKeywordChunks` (the chunk-grain anchor primitive used by Cathedral II two-pass retrieval, also gets source-boost so the anchor pool is dampened on chat dirs), and `searchVector` (becomes a two-stage CTE: pure-distance HNSW inner ORDER BY, source-boost re-rank in outer SELECT, innerLimit scales with offset to preserve pagination).
 - `src/core/types.ts` ... SearchOpts gains two fields: `exclude_slug_prefixes?: string[]` (additive over defaults + env) and `include_slug_prefixes?: string[]` (subtractive opt-back-in).
@@ -1559,7 +1777,7 @@ If you build with gbrain + OpenClaw + Claude Code: add your repo as a source (`g
 
 ### Itemized changes
 
-**Layer 0 — Wintermute's baseline (cherry-picked, author scrubbed).** Tree-sitter code chunker for 6 languages (TS/TSX/JS/Python/Ruby/Go), `gbrain repos add/list/remove`, strategy-aware sync, `PageType 'code'`, `importCodeFile`, per-file sync progress via the v0.15.2 reporter. Preserved exactly, committed under Garry's author identity.
+**Layer 0 — Garry's OpenClaw baseline (cherry-picked, author scrubbed).** Tree-sitter code chunker for 6 languages (TS/TSX/JS/Python/Ruby/Go), `gbrain repos add/list/remove`, strategy-aware sync, `PageType 'code'`, `importCodeFile`, per-file sync progress via the v0.15.2 reporter. Preserved exactly, committed under Garry's author identity.
 
 **Layer 1 — A6 structured errors + version bump.** New `src/core/errors.ts` exports `StructuredAgentError` + `buildError` + `serializeError`. Matches the v0.17.0 `CycleReport.PhaseResult.error` shape so agent-consumable errors stay consistent across every gbrain surface. `globToRegex` bug fix: `src/**/*.ts` now matches `src/foo.ts` (zero intermediate dirs). `GBRAIN_HOME` env var for test isolation. `package.json` → `0.19.0`.
 
@@ -1567,7 +1785,7 @@ If you build with gbrain + OpenClaw + Claude Code: add your repo as a source (`g
 
 **Layer 3 — schema migrations v25 + v26.** `pages.page_kind TEXT CHECK (page_kind IN ('markdown','code'))` on v25, using Postgres's `NOT VALID` + `VALIDATE CONSTRAINT` split so tables with millions of pages don't hold a write lock during the ALTER. `content_chunks` adds `language`, `symbol_name`, `symbol_type`, `start_line`, `end_line` on v26, plus partial indexes keyed on non-null values so code-chunk lookups stay cheap on mixed markdown+code brains.
 
-**Layer 4 — delete Wintermute's multi-repo, wire v0.18.0 sources.** The `repos` abstraction in Wintermute's baseline turned out to be redundant with v0.18.0's `sources` subsystem (per-source `last_commit`, `federated` search config, RLS-friendly, DB-native). v0.19.0 keeps `gbrain repos` as a deprecated alias that routes into `runSources`. `sync --all` iterates the `sources` table instead of a local config array. Codex's P0 #2 (per-repo sync bookmarks) and P0 #3 (slug collision) both resolved by the existing schema.
+**Layer 4 — delete the OpenClaw baseline's multi-repo, wire v0.18.0 sources.** The `repos` abstraction in Garry's OpenClaw baseline turned out to be redundant with v0.18.0's `sources` subsystem (per-source `last_commit`, `federated` search config, RLS-friendly, DB-native). v0.19.0 keeps `gbrain repos` as a deprecated alias that routes into `runSources`. `sync --all` iterates the `sources` table instead of a local config array. Codex's P0 #2 (per-repo sync bookmarks) and P0 #3 (slug collision) both resolved by the existing schema.
 
 **Layer 5 — Chonkie chunker parity (E2a).** 6 languages → 29. Embedded asset paths for every grammar in `tree-sitter-wasms`. Accurate tokenizer via `@dqbd/tiktoken` `cl100k_base` (lazy-init). Small-sibling merging with the Chonkie `bisect_left` pattern tuned to 15% of chunk target, so tiny siblings (imports, single-line consts) collapse while substantive classes/functions stay independent. `CHUNKER_VERSION=3` folded into `importCodeFile`'s `content_hash` so chunker-shape changes across releases force clean re-chunks without `sync --force`.
 
@@ -2014,7 +2232,7 @@ No schema migration. Existing brains work unchanged.
 - **`gbrain skillpack list`** — prints the curated bundle (25 skills) shipped with gbrain.
 - **`gbrain skillpack install <name>` / `--all`** — copies bundled skills into the target workspace. Automatically pulls shared convention files so nothing references a missing dep. Per-file diff protection, `--overwrite-local` escape hatch, `.gbrain-skillpack.lock` against concurrent installers, atomic managed-block update to AGENTS.md / RESOLVER.md.
 - **`gbrain skillpack diff <name>`** — per-file diff preview before install.
-- **`gbrain routing-eval`** — dedicated CI verb that runs routing fixtures (`skills/<name>/routing-eval.jsonl`) and surfaces intent-to-skill mismatches, ambiguous routing, and false positives. Default structural layer runs alongside `check-resolvable`; `--llm` opts into an LLM tie-break layer.
+- **`gbrain routing-eval`** — dedicated CI verb that runs routing fixtures (`skills/<name>/routing-eval.jsonl`) and surfaces intent-to-skill mismatches, ambiguous routing, and false positives. Ships the structural layer (same logic `check-resolvable` runs). The `--llm` flag is accepted as a placeholder for a future LLM tie-break layer; in this release it emits a stderr notice and runs structural only.
 - **`gbrain check-resolvable --strict`** — opt-in CI mode that promotes warnings to failures.
 - **`skills/_brain-filing-rules.json`** — machine-readable canonical filing rules (JSON sidecar to the prose `_brain-filing-rules.md`).
 - **`writes_pages: true` + `writes_to: [...]`** — new skill frontmatter fields consumed by the filing audit. Distinct from `mutating:` so cron schedulers and report writers aren't dragged into filing checks.
