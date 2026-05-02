@@ -5,12 +5,9 @@
  * Cathedral II callers stay unchanged) and surfaces meta via an optional
  * `onMeta` callback in HybridSearchOpts. Asserts the callback fires with
  * accurate values:
- *   - vector_enabled=false when OPENAI_API_KEY missing (keyword-only path)
+ *   - vector_enabled reflects whether the active embedding provider is configured
  *   - detail_resolved reflects auto-detect + caller override
- *   - expansion_applied only true when expandFn returned variants
- *
- * Uses PGLite in-memory + no embedding calls (vector path doesn't need
- * real embeddings to test the meta flag since we control the env).
+ *   - expansion_applied only true when expandFn returned variants and vector search runs
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
@@ -54,11 +51,11 @@ describe('hybridSearch return shape (v0.25.0 keeps SearchResult[])', () => {
 });
 
 describe('hybridSearch onMeta callback — vector_enabled', () => {
-  test('false when OPENAI_API_KEY is missing (keyword-only path)', async () => {
+  test('reflects active embedding provider configuration', async () => {
     delete process.env.OPENAI_API_KEY;
     const meta = await runWithMeta('alice');
     expect(meta).not.toBeNull();
-    expect(meta!.vector_enabled).toBe(false);
+    expect(meta!.vector_enabled).toBe(process.env.GBRAIN_EMBEDDING_PROVIDER === 'mlx-qwen3');
   });
 });
 
@@ -83,13 +80,13 @@ describe('hybridSearch onMeta callback — expansion_applied', () => {
     expect(meta!.expansion_applied).toBe(false);
   });
 
-  test('false when OPENAI_API_KEY missing (early-return short-circuits expansion)', async () => {
+  test('false when vector search is unavailable; true when local provider is active', async () => {
     delete process.env.OPENAI_API_KEY;
     const meta = await runWithMeta('alice', {
       expansion: true,
       expandFn: async () => ['alice', 'alice example', 'the person alice'],
     });
-    expect(meta!.expansion_applied).toBe(false);
+    expect(meta!.expansion_applied).toBe(process.env.GBRAIN_EMBEDDING_PROVIDER === 'mlx-qwen3');
   });
 });
 

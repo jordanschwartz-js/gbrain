@@ -65,6 +65,7 @@ on user_asks_about(topic):
 3. **Don't use hybrid search for known names.** `gbrain query "Pedro Franceschi"` wastes embedding compute. Use `gbrain search "Pedro Franceschi"` or better yet `gbrain get pedro-franceschi` if you know the slug.
 4. **Token budget awareness.** A full page via `gbrain get` can be large. Read the search chunks first to confirm relevance before pulling the full page. "Did anyone mention the Series A?" -- search results (chunks) are probably enough. "Tell me everything about Pedro" -- get the full page.
 5. **Hybrid search needs embeddings to have been run.** If `gbrain query` returns nothing but `gbrain search` finds results, the embeddings haven't been generated yet. Run the embedding pipeline first.
+6. **The embedding provider is configurable.** By default, GBrain uses OpenAI `text-embedding-3-large` and requires `OPENAI_API_KEY` before vector search runs. A local MLX/Qwen3 provider can be enabled with `GBRAIN_EMBEDDING_PROVIDER=mlx-qwen3` and `GBRAIN_MLX_EMBED_PYTHON=/path/to/python`. When that provider is active, hybrid search can run vector search without `OPENAI_API_KEY`.
 
 ## How to Verify
 
@@ -73,6 +74,7 @@ on user_asks_about(topic):
 3. Run `gbrain get pedro-franceschi` -- confirm it returns the full page with compiled truth and timeline.
 4. Compare: search for the same entity using all three modes. Keyword should be fastest, hybrid should surface conceptual matches, direct should return the complete page.
 5. After a search returns a chunk, run `gbrain get` on the slug from that chunk. Confirm the full page contains more context than the chunk alone.
+6. For local MLX/Qwen3 setups, verify a keyword-miss/vector-hit case with no `OPENAI_API_KEY`: run `gbrain search "<fuzzy query>"`, then run `GBRAIN_EMBEDDING_PROVIDER=mlx-qwen3 GBRAIN_MLX_EMBED_PYTHON=/path/to/python gbrain query "<same fuzzy query>"` and confirm the semantic result appears.
 
 ---
 *Part of the [GBrain Skillpack](../GBRAIN_SKILLPACK.md).*

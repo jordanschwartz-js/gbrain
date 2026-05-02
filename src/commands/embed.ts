@@ -1,5 +1,5 @@
 import type { BrainEngine } from '../core/engine.ts';
-import { embedBatch } from '../core/embedding.ts';
+import { embedBatch, EMBEDDING_MODEL } from '../core/embedding.ts';
 import type { ChunkInput } from '../core/types.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { createProgress, type ProgressReporter } from '../core/progress.ts';
@@ -204,6 +204,7 @@ async function embedPage(
     chunk_text: c.chunk_text,
     chunk_source: c.chunk_source,
     embedding: embeddingMap.get(c.chunk_index),
+    model: embeddingMap.has(c.chunk_index) ? EMBEDDING_MODEL : undefined,
     token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
   }));
 
@@ -285,6 +286,7 @@ async function embedAll(
         chunk_text: c.chunk_text,
         chunk_source: c.chunk_source,
         embedding: embeddingMap.get(c.chunk_index) ?? undefined,
+        model: embeddingMap.has(c.chunk_index) ? EMBEDDING_MODEL : undefined,
         token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
       }));
       await engine.upsertChunks(page.slug, updated);
@@ -413,6 +415,7 @@ async function embedAllStale(
         // For stale chunks: pass the new embedding.
         // For non-stale chunks: pass undefined → COALESCE preserves existing embedding.
         embedding: staleIdxToEmbedding.get(c.chunk_index) ?? undefined,
+        model: staleIdxToEmbedding.has(c.chunk_index) ? EMBEDDING_MODEL : undefined,
         token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
       }));
       await engine.upsertChunks(slug, merged);

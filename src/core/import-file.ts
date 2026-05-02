@@ -8,7 +8,7 @@ import { chunkText } from './chunkers/recursive.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
 import { findChunkForOffset } from './chunkers/edge-extractor.ts';
 import { extractCodeRefs } from './link-extraction.ts';
-import { embedBatch } from './embedding.ts';
+import { embedBatch, EMBEDDING_MODEL } from './embedding.ts';
 import { slugifyPath, slugifyCodePath, isCodeFilePath } from './sync.ts';
 import type { ChunkInput, PageType } from './types.ts';
 
@@ -258,6 +258,7 @@ export async function importFromContent(
       const embeddings = await embedBatch(chunks.map(c => c.chunk_text));
       for (let i = 0; i < chunks.length; i++) {
         chunks[i].embedding = embeddings[i];
+        chunks[i].model = EMBEDDING_MODEL;
         chunks[i].token_count = Math.ceil(chunks[i].chunk_text.length / 4);
       }
     } catch (e: unknown) {
@@ -485,6 +486,7 @@ export async function importCodeFile(
       for (let j = 0; j < needsEmbedIndexes.length; j++) {
         const i = needsEmbedIndexes[j]!;
         chunks[i]!.embedding = embeddings[j]!;
+        chunks[i]!.model = EMBEDDING_MODEL;
         chunks[i]!.token_count = Math.ceil(chunks[i]!.chunk_text.length / 4);
       }
     } catch (e: unknown) {

@@ -9,6 +9,7 @@ let maxConcurrentEmbedCalls = 0;
 let totalEmbedCalls = 0;
 
 mock.module('../src/core/embedding.ts', () => ({
+  EMBEDDING_MODEL: 'text-embedding-3-large',
   embedBatch: async (texts: string[]) => {
     activeEmbedCalls++;
     totalEmbedCalls++;
@@ -346,6 +347,7 @@ describe('runEmbedCore --stale egress fix (SQL-side filter)', () => {
     const staleChunkInUpsert = pageBUpsert!.chunks.find((c: any) => c.chunk_index === 1);
     expect(staleChunkInUpsert.embedding).toBeDefined();
     expect(staleChunkInUpsert.embedding).toBeInstanceOf(Float32Array);
+    expect(staleChunkInUpsert.model).toBe('text-embedding-3-large');
   });
 
   test('--stale dry-run: counts stale via countStaleChunks, reports via listStaleChunks, no embedBatch or upsertChunks', async () => {

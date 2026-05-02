@@ -14,32 +14,37 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { EMBEDDING_COST_PER_1K_TOKENS, estimateEmbeddingCostUsd } from '../src/core/embedding.ts';
+import { EMBEDDING_COST_PER_1K_TOKENS, EMBEDDING_PROVIDER, estimateEmbeddingCostUsd } from '../src/core/embedding.ts';
 import { estimateTokens } from '../src/core/chunkers/code.ts';
 
 describe('Layer 8 D1 — embedding cost model', () => {
-  test('EMBEDDING_COST_PER_1K_TOKENS is text-embedding-3-large pricing', () => {
-    // Update this when OpenAI changes text-embedding-3-large pricing.
-    // As of 2026-04-24: $0.00013 / 1k tokens.
-    expect(EMBEDDING_COST_PER_1K_TOKENS).toBe(0.00013);
+  test('EMBEDDING_COST_PER_1K_TOKENS matches active provider pricing', () => {
+    // OpenAI text-embedding-3-large: $0.00013 / 1k tokens as of 2026-04-24.
+    // Local MLX/Qwen3 is free at API-bill level, so the preview should be $0.
+    expect(EMBEDDING_COST_PER_1K_TOKENS).toBe(EMBEDDING_PROVIDER === 'mlx-qwen3' ? 0 : 0.00013);
   });
 
   test('estimateEmbeddingCostUsd scales linearly with tokens', () => {
+    const expectedPer1k = EMBEDDING_PROVIDER === 'mlx-qwen3' ? 0 : 0.00013;
     expect(estimateEmbeddingCostUsd(0)).toBe(0);
-    expect(estimateEmbeddingCostUsd(1000)).toBeCloseTo(0.00013, 5);
-    expect(estimateEmbeddingCostUsd(10_000)).toBeCloseTo(0.0013, 4);
-    expect(estimateEmbeddingCostUsd(1_000_000)).toBeCloseTo(0.13, 4);
+    expect(estimateEmbeddingCostUsd(1000)).toBeCloseTo(expectedPer1k, 5);
+    expect(estimateEmbeddingCostUsd(10_000)).toBeCloseTo(expectedPer1k * 10, 4);
+    expect(estimateEmbeddingCostUsd(1_000_000)).toBeCloseTo(expectedPer1k * 1000, 4);
   });
 
-  test('5K-file TS repo sanity check: ~$5 at ~400k tokens', () => {
-    // A 5K-file TS repo at ~80 tokens/file averages ~400k tokens. Cost:
-    // 400_000 / 1000 * 0.00013 = $0.052 ≈ $0.05. Not $5. The CHANGELOG
-    // prose claim "~$5 one-time" was conservative for very-large repos
-    // (100k+ tokens/file megaliths). This test pins the formula, not
-    // the prose estimate.
+  test('5K-file TS repo sanity check follows active provider pricing', () => {
+    // A 5K-file TS repo at ~80 tokens/file averages ~400k tokens.
     const cost = estimateEmbeddingCostUsd(400_000);
-    expect(cost).toBeGreaterThan(0.04);
-    expect(cost).toBeLessThan(0.07);
+    if (EMBEDDING_PROVIDER === 'mlx-qwen3') {
+      expect(cost).toBe(0);
+    } else {
+      // 400_000 / 1000 * 0.00013 = $0.052 ≈ $0.05. Not $5. The CHANGELOG
+      // prose claim "~$5 one-time" was conservative for very-large repos
+      // (100k+ tokens/file megaliths). This test pins the formula, not
+      // the prose estimate.
+      expect(cost).toBeGreaterThan(0.04);
+      expect(cost).toBeLessThan(0.07);
+    }
   });
 });
 
