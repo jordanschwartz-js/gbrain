@@ -18,7 +18,13 @@ import {
   isDreamOutput,
   DREAM_OUTPUT_MARKER_RE,
 } from '../src/core/cycle/transcript-discovery.ts';
-import { judgeSignificance, renderPageToMarkdown, type JudgeClient } from '../src/core/cycle/synthesize.ts';
+import {
+  __testing as synthTesting,
+  judgeSignificance,
+  makeOllamaJudgeClient,
+  renderPageToMarkdown,
+  type JudgeClient,
+} from '../src/core/cycle/synthesize.ts';
 
 let tmpDir: string;
 
@@ -315,6 +321,56 @@ describe('judgeSignificance', () => {
     const captured: { model?: string } = {};
     await judgeSignificance(mockClient(captured), makeTranscript());
     expect(captured.model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  test('defaults provider config to local Ollama model choices', () => {
+    expect(synthTesting.normalizeJudgeProvider(null)).toBe('ollama');
+    expect(synthTesting.normalizeJudgeProvider('')).toBe('ollama');
+    expect(synthTesting.normalizeJudgeProvider('ollama')).toBe('ollama');
+    expect(synthTesting.normalizeJudgeProvider('anthropic')).toBe('anthropic');
+    expect(synthTesting.defaultVerdictModel('anthropic')).toBe('claude-haiku-4-5-20251001');
+    expect(synthTesting.defaultVerdictModel('ollama')).toBe('gpt-oss:20b');
+  });
+
+  test('Ollama judge client calls JSON-mode chat API and parses verdict', async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedUrl = '';
+    let capturedBody: any = null;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      capturedUrl = String(url);
+      capturedBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        message: { content: '{"worth_processing": true, "reasons": ["local verdict"]}' },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const r = await judgeSignificance(makeOllamaJudgeClient('http://ollama.test/'), makeTranscript(), 'gpt-oss:20b');
+      expect(r.worth_processing).toBe(true);
+      expect(r.reasons).toEqual(['local verdict']);
+      expect(capturedUrl).toBe('http://ollama.test/api/chat');
+      expect(capturedBody.model).toBe('gpt-oss:20b');
+      expect(capturedBody.stream).toBe(false);
+      expect(capturedBody.format).toBe('json');
+      expect(capturedBody.think).toBe(false);
+      expect(capturedBody.messages.some((m: any) => m.role === 'system')).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('Ollama judge client reports server errors cleanly', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('model not found', { status: 404, statusText: 'Not Found' })) as unknown as typeof fetch;
+    try {
+      await expect(makeOllamaJudgeClient().create({
+        model: 'missing-model',
+        max_tokens: 200,
+        messages: [{ role: 'user', content: 'hi' }],
+      } as any)).rejects.toThrow(/ollama 404: model not found/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   test('returns worth_processing=false when judge returns unparseable text', async () => {

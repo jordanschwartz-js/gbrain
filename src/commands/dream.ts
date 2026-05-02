@@ -205,6 +205,11 @@ Examples:
 Configure synthesize:
   gbrain config set dream.synthesize.session_corpus_dir /path/to/transcripts
   gbrain config set dream.synthesize.enabled true
+  gbrain config set dream.synthesize.provider ollama        # default: local chat
+  gbrain config set dream.synthesize.model gpt-oss:20b
+  gbrain config set dream.synthesize.verdict_model gpt-oss:20b
+  gbrain config set dream.patterns.provider ollama          # default: local patterns
+  gbrain config set dream.patterns.model gpt-oss:20b
 
 Related:
   gbrain autopilot --install            # continuous maintenance as a daemon

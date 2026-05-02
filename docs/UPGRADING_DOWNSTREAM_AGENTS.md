@@ -365,17 +365,18 @@ type in Minions, and a plugin contract for host-repo subagent defs. None of the
 existing skills need surgery. The question for downstream agents is *how* to
 adopt the new runtime, not how to patch around a breaking change.
 
-### 1. Run a worker with an Anthropic key
+### 1. Run a worker with local Ollama, or explicitly opt into Anthropic
 
 The subagent handlers (`subagent` and `subagent_aggregator`) are always
-registered on the worker. No separate opt-in flag — `ANTHROPIC_API_KEY` is
-the natural cost gate (no key, the SDK call fails on the first turn), and
-who-can-submit is already protected (`PROTECTED_JOB_NAMES` + trusted-submit:
-MCP callers get `permission_denied`; only `gbrain agent run` can insert
-these rows).
+registered on the worker. The default provider is local Ollama
+(`gpt-oss:20b`). Anthropic is still supported, but only when a trusted caller
+explicitly sets `provider: anthropic` and the worker has `ANTHROPIC_API_KEY`.
+Who-can-submit is already protected (`PROTECTED_JOB_NAMES` + trusted-submit:
+MCP callers get `permission_denied`; only `gbrain agent run` can insert these
+rows).
 
 ```bash
-ANTHROPIC_API_KEY=sk-ant-... gbrain jobs work
+gbrain jobs work
 ```
 
 Worker startup prints:

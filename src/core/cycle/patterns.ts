@@ -63,8 +63,8 @@ export async function runPhasePatterns(
       });
     }
 
-    // Submit one subagent for pattern detection.
-    if (!process.env.ANTHROPIC_API_KEY) {
+    // Submit one subagent for pattern detection. Ollama is local; Anthropic remains explicit legacy opt-in.
+    if (config.provider === 'anthropic' && !process.env.ANTHROPIC_API_KEY) {
       return skipped('no_api_key', 'ANTHROPIC_API_KEY unset; pattern detection skipped');
     }
 
@@ -80,6 +80,8 @@ export async function runPhasePatterns(
       model: config.model,
       max_turns: 30,
       allowed_slug_prefixes: allowedSlugPrefixes,
+      provider: config.provider,
+      ollama_base_url: config.ollamaBaseUrl,
     };
     const submitOpts: Partial<MinionJobInput> = {
       max_stalled: 3,
@@ -133,6 +135,8 @@ interface PatternsConfig {
   lookbackDays: number;
   minEvidence: number;
   model: string;
+  provider: 'anthropic' | 'ollama';
+  ollamaBaseUrl: string;
 }
 
 async function loadPatternsConfig(engine: BrainEngine): Promise<PatternsConfig> {
@@ -140,12 +144,19 @@ async function loadPatternsConfig(engine: BrainEngine): Promise<PatternsConfig> 
   const enabled = enabledStr === null ? true : enabledStr === 'true';
   const lookbackStr = await engine.getConfig('dream.patterns.lookback_days');
   const minEvidenceStr = await engine.getConfig('dream.patterns.min_evidence');
-  const model = (await engine.getConfig('dream.patterns.model')) || 'claude-sonnet-4-6';
+  const provider = (await engine.getConfig('dream.patterns.provider')) === 'anthropic' ? 'anthropic' : 'ollama';
+  const model = (await engine.getConfig('dream.patterns.model')) ||
+    (provider === 'ollama' ? 'gpt-oss:20b' : 'claude-sonnet-4-6');
+  const ollamaBaseUrl = (await engine.getConfig('dream.patterns.ollama_base_url')) ||
+    (await engine.getConfig('dream.synthesize.ollama_base_url')) ||
+    'http://127.0.0.1:11434';
   return {
     enabled,
     lookbackDays: lookbackStr ? Math.max(1, parseInt(lookbackStr, 10) || 30) : 30,
     minEvidence: minEvidenceStr ? Math.max(1, parseInt(minEvidenceStr, 10) || 3) : 3,
     model,
+    provider,
+    ollamaBaseUrl,
   };
 }
 

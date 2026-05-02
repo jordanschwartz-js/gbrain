@@ -39,9 +39,10 @@ describe('patterns phase wiring', () => {
     expect(patternsSrc).toContain("tool_name = 'brain_put_page'");
   });
 
-  test('skips when ANTHROPIC_API_KEY missing', () => {
+  test('Anthropic skip is legacy explicit opt-in only', () => {
     expect(patternsSrc).toContain('ANTHROPIC_API_KEY');
     expect(patternsSrc).toContain('no_api_key');
+    expect(patternsSrc).toContain("=== 'anthropic'");
   });
 
   test('skips when reflections below min_evidence', () => {

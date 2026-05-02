@@ -16,6 +16,8 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:tes
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { MinionQueue } from '../src/core/minions/queue.ts';
 import {
+  __testing as subagentTesting,
+  makeOllamaMessagesClient,
   makeSubagentHandler,
   RateLeaseUnavailableError,
   type MessagesClient,
@@ -421,8 +423,8 @@ describe('subagent handler input validation', () => {
   });
 });
 
-describe('makeSubagentHandler default client construction', () => {
-  test('factory default wires sdk.messages through to the handler', async () => {
+describe('makeSubagentHandler Anthropic client construction', () => {
+  test('explicit Anthropic provider wires sdk.messages through to the handler', async () => {
     // Regression guard for the v0.16.0 shipped bug: makeSubagentHandler
     // was casting `new Anthropic()` (top-level SDK class) to MessagesClient,
     // but `.create()` lives at sdk.messages.create. Every subagent job in
@@ -456,18 +458,129 @@ describe('makeSubagentHandler default client construction', () => {
       },
     } as unknown as Anthropic;
 
-    // Crucial: do NOT pass `client`. Only `makeAnthropic`. This forces the
-    // factory to hit the default-client branch (`deps.client ?? makeAnthropic().messages`).
+    // Crucial: do NOT pass `client`. Only `makeAnthropic`. This proves the
+    // explicit Anthropic branch constructs and uses sdk.messages lazily.
     const handler = makeSubagentHandler({
       engine,
       makeAnthropic: () => fakeSdk,
       toolRegistry: [],
     });
-    const ctx = await makeCtx({ prompt: 'hello' });
+    const ctx = await makeCtx({ prompt: 'hello', provider: 'anthropic' });
     const result = await handler(ctx);
 
     expect(calls.length).toBe(1);
     expect(result.stop_reason).toBe('end_turn');
     expect(result.result).toBe('ok');
+  });
+});
+
+
+describe('Ollama subagent adapter', () => {
+  test('normalizes Ollama tool calls into Anthropic-shaped content blocks', () => {
+    const msg = subagentTesting.ollamaResponseToAnthropic({
+      model: 'gpt-oss:20b',
+      message: {
+        content: '',
+        tool_calls: [
+          { id: 'call_1', function: { name: 'echo', arguments: { value: 'v1' } } },
+        ],
+      },
+      prompt_eval_count: 3,
+      eval_count: 4,
+    } as any, 'gpt-oss:20b');
+    expect(msg.stop_reason).toBe('tool_use');
+    expect(msg.usage.input_tokens).toBe(3);
+    expect(msg.content).toEqual([
+      { type: 'tool_use', id: 'call_1', name: 'echo', input: { value: 'v1' } },
+    ] as any);
+  });
+
+  test('converts Anthropic-shaped messages and tools to Ollama chat payload', () => {
+    const converted = subagentTesting.anthropicParamsToOllama({
+      model: 'gpt-oss:20b',
+      max_tokens: 4096,
+      system: [{ type: 'text', text: 'system prompt' }] as any,
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'tu_1', name: 'echo', input: { value: 'v1' } }] as any },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'tu_1', content: { echoed: true } }] as any },
+      ],
+      tools: [{ name: 'echo', description: 'echo input', input_schema: { type: 'object', properties: {} } }] as any,
+    });
+    expect(converted.messages[0]).toEqual({ role: 'system', content: 'system prompt' });
+    expect(converted.messages[2]).toEqual({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 'tu_1', type: 'function', function: { name: 'echo', arguments: { value: 'v1' } } }],
+    });
+    expect(converted.messages[3]).toEqual({
+      role: 'tool',
+      content: '{"echoed":true}',
+      tool_name: 'echo',
+    });
+    expect(converted.tools[0]).toEqual({
+      type: 'function',
+      function: { name: 'echo', description: 'echo input', parameters: { type: 'object', properties: {} } },
+    });
+  });
+
+  test('handler can execute a tool loop through Ollama provider without bypassing tool registry', async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: any[] = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      requests.push(body);
+      const response = requests.length === 1
+        ? {
+            model: 'gpt-oss:20b',
+            message: {
+              role: 'assistant',
+              content: '',
+              tool_calls: [{ id: 'call_1', function: { name: 'echo', arguments: { value: 'v1' } } }],
+            },
+            prompt_eval_count: 2,
+            eval_count: 3,
+          }
+        : {
+            model: 'gpt-oss:20b',
+            message: { role: 'assistant', content: 'done locally' },
+            prompt_eval_count: 4,
+            eval_count: 5,
+          };
+      return new Response(JSON.stringify(response), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    try {
+      const handler = makeSubagentHandler({ engine, toolRegistry: [makeEchoTool()] });
+      const ctx = await makeCtx({ prompt: 'go', provider: 'ollama', model: 'gpt-oss:20b' });
+      const result = await handler(ctx);
+      expect(result.result).toBe('done locally');
+      expect(result.turns_count).toBe(2);
+      expect(requests[0].tools?.[0]?.function?.name).toBe('echo');
+      expect(requests[1].messages.some((m: any) => m.role === 'tool' && m.tool_name === 'echo')).toBe(true);
+
+      const rows = await engine.executeRaw<{ status: string; output: unknown }>(
+        `SELECT status, output FROM subagent_tool_executions WHERE job_id = $1`,
+        [ctx.id],
+      );
+      expect(rows.length).toBe(1);
+      expect(rows[0]!.status).toBe('complete');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('Ollama messages client reports server errors cleanly', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response('missing model', { status: 404, statusText: 'Not Found' })) as unknown as typeof fetch;
+    try {
+      await expect(makeOllamaMessagesClient().create({
+        model: 'missing-model',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: 'hi' }],
+      } as any)).rejects.toThrow(/ollama 404: missing model/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

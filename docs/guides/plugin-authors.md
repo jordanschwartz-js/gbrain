@@ -99,7 +99,8 @@ Recognized frontmatter fields:
 | field           | type     | required | notes                                                                                   |
 |-----------------|----------|----------|-----------------------------------------------------------------------------------------|
 | `name`          | string   | no       | Subagent identifier used as `--subagent-def`. Defaults to the file basename.            |
-| `model`         | string   | no       | Anthropic model id. Defaults to the handler default (sonnet).                           |
+| `model`         | string   | no       | Chat model id. Defaults to local Ollama `gpt-oss:20b` unless a provider override says otherwise. |
+| `provider`      | string   | no       | `ollama` by default; `anthropic` is explicit opt-in.                                    |
 | `max_turns`     | number   | no       | Cap on assistant turns. Defaults to 20.                                                 |
 | `allowed_tools` | string[] | no       | Whitelist of tool names. Must subset the derived brain registry. Rejected on mismatch.  |
 

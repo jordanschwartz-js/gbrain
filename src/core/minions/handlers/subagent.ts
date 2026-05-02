@@ -1,7 +1,7 @@
 /**
  * Subagent LLM-loop handler (v0.15).
  *
- * Runs one Anthropic Messages API conversation with tool use. The loop is
+ * Runs one provider-backed chat conversation with tool use. The loop is
  * crash-resumable: subagent_messages + subagent_tool_executions together
  * are the single source of truth about where the conversation is. On
  * resume after a worker kill, we load all committed rows, trust any tool
@@ -14,7 +14,7 @@
  *     renewable error so the worker re-claims.
  *   - dual-signal abort wiring (ctx.signal + ctx.shutdownSignal) drains
  *     the in-flight call and commits whatever turns are already persisted.
- *   - Anthropic prompt cache markers on system + tools blocks.
+ *   - Anthropic prompt cache markers on system + tools blocks when Anthropic is explicitly selected.
  *   - token rollup via ctx.updateTokens per turn.
  *
  * NOT in v0.15: refusal detection, stop_reason=max_tokens partial
@@ -50,6 +50,8 @@ import {
 // ── Defaults ────────────────────────────────────────────────
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_OLLAMA_MODEL = 'gpt-oss:20b';
+const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_RATE_KEY = 'anthropic:messages';
 const DEFAULT_MAX_CONCURRENT = Number(process.env.GBRAIN_ANTHROPIC_MAX_INFLIGHT ?? '8');
@@ -121,8 +123,8 @@ interface PersistedToolExec {
 /**
  * Build a subagent handler bound to a specific engine. `registerBuiltin
  * Handlers` wires this up as `worker.register('subagent', handler)` at
- * worker startup. Always registered — `ANTHROPIC_API_KEY` is the natural
- * cost gate and `PROTECTED_JOB_NAMES` gates submission.
+ * worker startup. Always registered — local Ollama is the default provider,
+ * with Anthropic available only when explicitly requested.
  */
 export function makeSubagentHandler(deps: SubagentDeps) {
   const engine = deps.engine;
@@ -132,9 +134,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   // right object; JS method-call semantics preserve `this` at the call
   // site (subagent.ts invokes client.create(...) with client === sdk.messages).
   const makeAnthropic = deps.makeAnthropic ?? (() => new Anthropic());
-  const client: MessagesClient = deps.client ?? makeAnthropic().messages;
   const config = deps.config ?? loadConfig() ?? ({ engine: 'postgres' } as GBrainConfig);
-  const rateLeaseKey = deps.rateLeaseKey ?? DEFAULT_RATE_KEY;
   const maxConcurrent = deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   const leaseTtlMs = deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
 
@@ -144,7 +144,12 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       throw new Error('subagent job data.prompt is required (string)');
     }
 
-    const model = data.model ?? DEFAULT_MODEL;
+    const provider = data.provider === undefined && deps.client ? 'anthropic' : normalizeProvider(data.provider);
+    const model = data.model ?? (provider === 'ollama' ? DEFAULT_OLLAMA_MODEL : DEFAULT_MODEL);
+    const client = provider === 'ollama'
+      ? makeOllamaMessagesClient(data.ollama_base_url ?? DEFAULT_OLLAMA_BASE_URL)
+      : (deps.client ?? makeAnthropic().messages);
+    const rateKey = deps.rateLeaseKey ?? (provider === 'ollama' ? 'ollama:chat' : DEFAULT_RATE_KEY);
     const maxTurns = data.max_turns ?? DEFAULT_MAX_TURNS;
     const systemPrompt = data.system ?? DEFAULT_SYSTEM;
 
@@ -304,11 +309,11 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       }
 
       // 1. Acquire rate lease for the outbound call.
-      const lease = await acquireLease(engine, rateLeaseKey, ctx.id, maxConcurrent, { ttlMs: leaseTtlMs });
+      const lease = await acquireLease(engine, rateKey, ctx.id, maxConcurrent, { ttlMs: leaseTtlMs });
       if (!lease.acquired) {
         // No slots — treat as a renewable error so the worker re-claims
         // the job later. Don't fail terminally.
-        throw new RateLeaseUnavailableError(rateLeaseKey, lease.activeCount, lease.maxConcurrent);
+        throw new RateLeaseUnavailableError(rateKey, lease.activeCount, lease.maxConcurrent);
       }
 
       let assistantMsg: Anthropic.Message;
@@ -335,8 +340,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
                     description: t.description,
                     input_schema: t.input_schema,
                   };
-                  // Cache only the last tool def — Anthropic treats cache_control
-                  // as "cache everything up to and including this block".
+                  // Cache only the last tool def for Anthropic. Ollama adapter ignores this field.
                   if (i === toolDefs.length - 1) def.cache_control = { type: 'ephemeral' };
                   return def;
                 }),
@@ -544,6 +548,169 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   };
 }
 
+
+// ── Provider adapters ───────────────────────────────────────
+
+function normalizeProvider(value: unknown): 'anthropic' | 'ollama' {
+  return value === 'anthropic' ? 'anthropic' : 'ollama';
+}
+
+export function makeOllamaMessagesClient(baseUrl = DEFAULT_OLLAMA_BASE_URL): MessagesClient {
+  const root = baseUrl.replace(/\/+$/, '');
+  return {
+    create: async (params, opts) => {
+      const converted = anthropicParamsToOllama(params);
+      const response = await fetch(`${root}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: opts?.signal,
+        body: JSON.stringify({
+          model: params.model,
+          stream: false,
+          messages: converted.messages,
+          ...(converted.tools.length > 0 ? { tools: converted.tools } : {}),
+          options: { temperature: 0 },
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`ollama ${response.status}: ${text.slice(0, 200) || response.statusText}`);
+      }
+      const payload = await response.json() as OllamaChatResponse;
+      if (payload.error) throw new Error(String(payload.error));
+      return ollamaResponseToAnthropic(payload, params.model);
+    },
+  };
+}
+
+interface OllamaToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: unknown };
+}
+
+interface OllamaChatResponse {
+  model?: string;
+  message?: { role?: string; content?: string; thinking?: string; tool_calls?: OllamaToolCall[] };
+  prompt_eval_count?: number;
+  eval_count?: number;
+  error?: unknown;
+}
+
+function anthropicParamsToOllama(params: Anthropic.MessageCreateParamsNonStreaming): {
+  messages: Array<Record<string, unknown>>;
+  tools: Array<Record<string, unknown>>;
+} {
+  const messages: Array<Record<string, unknown>> = [];
+  const toolNameById = new Map<string, string>();
+  const systemText = stringifyAnthropicContent(params.system as unknown);
+  if (systemText) messages.push({ role: 'system', content: systemText });
+
+  for (const m of params.messages ?? []) {
+    const blocks = Array.isArray(m.content) ? m.content as ContentBlock[] : [{ type: 'text', text: m.content as string } as ContentBlock];
+    const text = blocks
+      .filter(b => b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text as string)
+      .join('\n');
+    const toolUses = blocks.filter(
+      (b): b is { type: 'tool_use'; id: string; name: string; input: unknown } & Record<string, unknown> =>
+        b.type === 'tool_use',
+    );
+    const toolResults = blocks.filter(
+      (b): b is { type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean } & Record<string, unknown> =>
+        b.type === 'tool_result',
+    );
+
+    if (m.role === 'assistant') {
+      const msg: Record<string, unknown> = { role: 'assistant', content: text };
+      if (toolUses.length > 0) {
+        msg.tool_calls = toolUses.map(use => {
+          toolNameById.set(use.id, use.name);
+          return { id: use.id, type: 'function', function: { name: use.name, arguments: use.input ?? {} } };
+        });
+      }
+      messages.push(msg);
+      continue;
+    }
+
+    if (toolResults.length > 0) {
+      if (text) messages.push({ role: 'user', content: text });
+      for (const result of toolResults) {
+        messages.push({
+          role: 'tool',
+          content: asStringIfNotObject(result.content),
+          tool_name: toolNameById.get(result.tool_use_id),
+        });
+      }
+      continue;
+    }
+
+    messages.push({ role: 'user', content: text });
+  }
+
+  const tools = ((params.tools ?? []) as unknown as Array<Record<string, unknown>>).map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema ?? { type: 'object', properties: {} },
+    },
+  }));
+  return { messages, tools };
+}
+
+function ollamaResponseToAnthropic(payload: OllamaChatResponse, requestedModel: string): Anthropic.Message {
+  const content: ContentBlock[] = [];
+  const text = typeof payload.message?.content === 'string' ? payload.message.content : '';
+  if (text.trim()) content.push({ type: 'text', text });
+  for (const call of payload.message?.tool_calls ?? []) {
+    const name = call.function?.name;
+    if (!name) continue;
+    content.push({
+      type: 'tool_use',
+      id: call.id || `ollama_tool_${content.length}_${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      input: normalizeOllamaToolArgs(call.function?.arguments),
+    });
+  }
+  if (content.length === 0) content.push({ type: 'text', text: '' });
+  return {
+    id: `ollama_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    model: payload.model ?? requestedModel,
+    content: content as Anthropic.Message['content'],
+    stop_reason: content.some(b => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: payload.prompt_eval_count ?? 0,
+      output_tokens: payload.eval_count ?? 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    } as any,
+  } as Anthropic.Message;
+}
+
+function normalizeOllamaToolArgs(args: unknown): unknown {
+  if (typeof args === 'string') {
+    try { return JSON.parse(args); } catch { return {}; }
+  }
+  return args && typeof args === 'object' ? args : {};
+}
+
+function stringifyAnthropicContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(block => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && 'text' in block && typeof (block as { text?: unknown }).text === 'string') {
+        return (block as { text: string }).text;
+      }
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
 // ── Internal: persistence ───────────────────────────────────
 
 async function loadPriorMessages(engine: BrainEngine, jobId: number): Promise<PersistedMessage[]> {
@@ -711,4 +878,8 @@ export const __testing = {
   persistToolExecFailed,
   asStringIfNotObject,
   DEFAULT_MODEL,
+  DEFAULT_OLLAMA_MODEL,
+  normalizeProvider,
+  anthropicParamsToOllama,
+  ollamaResponseToAnthropic,
 };

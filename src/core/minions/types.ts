@@ -399,16 +399,20 @@ export function rowToMinionJob(row: Record<string, unknown>): MinionJob {
 
 /**
  * Input payload for the 'subagent' handler. Shape is intentionally narrow —
- * tool registry and provider config resolve via handler-side defaults + env,
- * not per-job data, so restart/replay uses the same behavior.
+ * tool registry resolves via handler-side defaults + env. Provider/model may
+ * be supplied by trusted orchestrators; replay persists the same job data.
  */
 export interface SubagentHandlerData {
   /** Top-level user turn kicking off the loop. */
   prompt: string;
   /** Optional subagent definition path (skills/subagents/*.md or plugin). */
   subagent_def?: string;
-  /** Anthropic model id. Defaults to sonnet at handler resolution time. */
+  /** Chat model id. Defaults to gpt-oss:20b for Ollama or sonnet for explicit Anthropic. */
   model?: string;
+  /** Optional LLM provider override. Defaults to local Ollama. */
+  provider?: 'anthropic' | 'ollama';
+  /** Optional Ollama base URL when provider='ollama'. */
+  ollama_base_url?: string;
   /** Max assistant turns before the loop fails with stop_reason='max_turns'. */
   max_turns?: number;
   /**
