@@ -58,6 +58,74 @@ const DEFAULT_MAX_CONCURRENT = Number(process.env.GBRAIN_ANTHROPIC_MAX_INFLIGHT 
 const DEFAULT_LEASE_TTL_MS = 120_000;
 const DEFAULT_SYSTEM = 'You are a helpful assistant running as a gbrain subagent.';
 
+// ── Dream synthesis quote fidelity guard ────────────────────
+
+function withQuoteFidelityGuard(
+  tools: ToolDef[],
+  source: string,
+  label = 'source transcript',
+): ToolDef[] {
+  return tools.map(tool => {
+    if (tool.name !== 'brain_put_page') return tool;
+    return {
+      ...tool,
+      async execute(input, ctx) {
+        assertPutPageQuotesAreSourceFaithful(input, source, label);
+        return tool.execute(input, ctx);
+      },
+    };
+  });
+}
+
+function assertPutPageQuotesAreSourceFaithful(input: unknown, source: string, label: string): void {
+  const params = parseToolInputObject(input);
+  const content = typeof params.content === 'string' ? params.content : '';
+  const body = stripFrontmatter(content);
+  const quotedSpans = extractDoubleQuotedSpans(body);
+  if (quotedSpans.length === 0) return;
+
+  const normalizedSource = normalizeQuoteText(source);
+  const invalid = quotedSpans.filter(q => !normalizedSource.includes(normalizeQuoteText(q)));
+  if (invalid.length === 0) return;
+
+  const examples = invalid.slice(0, 3).map(q => `“${q}”`).join(', ');
+  throw new Error(
+    `dream synthesis quote fidelity check failed: ${examples} not found verbatim in ${label}. ` +
+    'Use unquoted paraphrase/inference text unless the quoted words are copied exactly from the user-authored source.'
+  );
+}
+
+function parseToolInputObject(input: unknown): Record<string, unknown> {
+  if (input && typeof input === 'object' && !Array.isArray(input)) return input as Record<string, unknown>;
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* fall through */ }
+  }
+  return {};
+}
+
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  return end >= 0 ? content.slice(end + 4) : content;
+}
+
+function extractDoubleQuotedSpans(content: string): string[] {
+  const spans: string[] = [];
+  const re = /"([^"\n]+)"|“([^”\n]+)”/g;
+  for (const match of content.matchAll(re)) {
+    const span = (match[1] ?? match[2] ?? '').trim();
+    if (span.length > 0) spans.push(span);
+  }
+  return spans;
+}
+
+function normalizeQuoteText(text: string): string {
+  return text.replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
+}
+
 // ── Injectable surfaces (for tests) ─────────────────────────
 
 /**
@@ -163,9 +231,12 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       config,
       allowedSlugPrefixes: data.allowed_slug_prefixes,
     });
-    const toolDefs = data.allowed_tools && data.allowed_tools.length > 0
+    const baseToolDefs = data.allowed_tools && data.allowed_tools.length > 0
       ? filterAllowedTools(registry, data.allowed_tools)
       : registry;
+    const toolDefs = data.quote_fidelity_source !== undefined
+      ? withQuoteFidelityGuard(baseToolDefs, data.quote_fidelity_source, data.quote_fidelity_label)
+      : baseToolDefs;
 
     logSubagentSubmission({
       caller: 'worker',
@@ -877,6 +948,9 @@ export const __testing = {
   persistToolExecComplete,
   persistToolExecFailed,
   asStringIfNotObject,
+  withQuoteFidelityGuard,
+  assertPutPageQuotesAreSourceFaithful,
+  extractDoubleQuotedSpans,
   DEFAULT_MODEL,
   DEFAULT_OLLAMA_MODEL,
   normalizeProvider,

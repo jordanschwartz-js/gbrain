@@ -426,6 +426,15 @@ export interface SubagentHandlerData {
   /** Template variables for subagent_def. Arbitrary JSON-serializable. */
   input_vars?: Record<string, unknown>;
   /**
+   * Optional trusted source text for dream-synthesis quote fidelity checks.
+   * When set, brain_put_page calls reject double-quoted prose unless the quoted
+   * text appears exactly in this source. This is set only by trusted cycle
+   * orchestrators; MCP cannot reach protected subagent submission.
+   */
+  quote_fidelity_source?: string;
+  /** Human-readable source label for quote fidelity errors. */
+  quote_fidelity_label?: string;
+  /**
    * Trusted-workspace allow-list for put_page (v0.23 dream cycle).
    *
    * When set, the subagent's put_page calls are bounded to slugs matching

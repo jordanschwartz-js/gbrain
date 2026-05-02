@@ -30,6 +30,9 @@ async function setupRig(): Promise<TestRig> {
   const engine = new PGLiteEngine();
   await engine.connect({ engine: 'pglite' } as never);
   await engine.initSchema();
+  // Keep this no-network e2e suite deterministic even when the operator's
+  // live config defaults dream synthesis to local Ollama.
+  await engine.setConfig('dream.synthesize.provider', 'anthropic');
   const brainDir = mkdtempSync(join(tmpdir(), 'gbrain-synth-brain-'));
   const corpusDir = mkdtempSync(join(tmpdir(), 'gbrain-synth-corpus-'));
   return {

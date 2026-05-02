@@ -229,12 +229,16 @@ async function collectChildPutPageSlugs(
 ): Promise<string[]> {
   if (childIds.length === 0) return [];
   const rows = await engine.executeRaw<{ slug: string }>(
-    `SELECT DISTINCT input->>'slug' AS slug
+    `SELECT DISTINCT
+        CASE
+          WHEN jsonb_typeof(input) = 'object' THEN input->>'slug'
+          WHEN jsonb_typeof(input) = 'string' THEN (input #>> '{}')::jsonb->>'slug'
+          ELSE NULL
+        END AS slug
        FROM subagent_tool_executions
       WHERE job_id = ANY($1::int[])
         AND tool_name = 'brain_put_page'
         AND status = 'complete'
-        AND input ? 'slug'
       ORDER BY 1`,
     [childIds],
   );

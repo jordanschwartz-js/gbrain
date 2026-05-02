@@ -122,6 +122,16 @@ function makeThrowingTool(name = 'broken'): ToolDef {
   };
 }
 
+function makePutPageTool(): ToolDef {
+  return {
+    name: 'brain_put_page',
+    description: 'write page',
+    input_schema: { type: 'object', properties: { slug: { type: 'string' }, content: { type: 'string' } }, required: ['slug', 'content'] },
+    idempotent: true,
+    async execute(input) { return { written: (input as { slug?: string }).slug }; },
+  };
+}
+
 // ── Tests ───────────────────────────────────────────────────
 
 describe('subagent handler happy path', () => {
@@ -178,6 +188,74 @@ describe('subagent handler happy path', () => {
     expect(rows[0]!.status).toBe('complete');
     const out = typeof rows[0]!.output === 'string' ? JSON.parse(rows[0]!.output as string) : rows[0]!.output;
     expect(out).toEqual({ echoed: { value: 'v1' } });
+  });
+
+  test('dream quote fidelity guard rejects non-verbatim put_page quotes', async () => {
+    const client = new FakeMessagesClient([
+      {
+        content: [{
+          type: 'tool_use',
+          id: 'tu_quote_bad',
+          name: 'brain_put_page',
+          input: {
+            slug: 'personal/reflections/test',
+            content: '---\ntitle: Test\n---\n\nJordan supposedly said "ship it broadly now" in the session.',
+          },
+        } as any],
+        stop_reason: 'tool_use' as any,
+      },
+      { content: [{ type: 'text', text: 'removed bad quote' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makePutPageTool()] });
+    const ctx = await makeCtx({
+      prompt: 'write dream page',
+      quote_fidelity_source: 'Sweet let’s do it',
+      quote_fidelity_label: 'controlled-transcript.txt',
+    });
+
+    const result = await handler(ctx);
+
+    expect(result.result).toBe('removed bad quote');
+    const rows = await engine.executeRaw<{ status: string; error: string | null }>(
+      `SELECT status, error FROM subagent_tool_executions WHERE job_id = $1`,
+      [ctx.id],
+    );
+    expect(rows[0]!.status).toBe('failed');
+    expect(rows[0]!.error).toContain('quote fidelity check failed');
+    expect(rows[0]!.error).toContain('ship it broadly now');
+  });
+
+  test('dream quote fidelity guard allows exact source quotes', async () => {
+    const client = new FakeMessagesClient([
+      {
+        content: [{
+          type: 'tool_use',
+          id: 'tu_quote_ok',
+          name: 'brain_put_page',
+          input: {
+            slug: 'personal/reflections/test',
+            content: '---\ntitle: Test\n---\n\nThe direct quote was "Sweet let’s do it".',
+          },
+        } as any],
+        stop_reason: 'tool_use' as any,
+      },
+      { content: [{ type: 'text', text: 'done' }] as any, stop_reason: 'end_turn' },
+    ]);
+    const handler = makeSubagentHandler({ engine, client, toolRegistry: [makePutPageTool()] });
+    const ctx = await makeCtx({
+      prompt: 'write dream page',
+      quote_fidelity_source: 'Sweet let’s do it',
+      quote_fidelity_label: 'controlled-transcript.txt',
+    });
+
+    const result = await handler(ctx);
+
+    expect(result.result).toBe('done');
+    const rows = await engine.executeRaw<{ status: string; output: unknown }>(
+      `SELECT status, output FROM subagent_tool_executions WHERE job_id = $1`,
+      [ctx.id],
+    );
+    expect(rows[0]!.status).toBe('complete');
   });
 
   test('tool throws: row goes failed, model sees error, loop continues', async () => {

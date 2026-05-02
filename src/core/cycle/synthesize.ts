@@ -189,6 +189,8 @@ export async function runPhaseSynthesize(
       const childData: SubagentHandlerData = {
         prompt: buildSynthesisPrompt(t),
         model: config.model,
+        quote_fidelity_source: extractDirectQuoteSource(t.content),
+        quote_fidelity_label: t.basename,
         max_turns: 30,
         allowed_slug_prefixes: allowedSlugPrefixes,
         provider: config.provider,
@@ -508,21 +510,28 @@ CONTEXT
 - Source file basename: ${baseSlugSegment}
 
 OUTPUT POLICY (ALL of these are required)
-1. Quote the user verbatim. Do not paraphrase memorable phrasings.
-2. Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., \`[ref](people/jane-doe)\` or \`[[people/jane-doe]]\`) to existing brain content. Use the search tool to find existing pages first.
-3. Do NOT write to any path outside the allow-list shown in the put_page schema.
-4. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
+1. Quote fidelity is strict: use quotation marks ONLY for words copied exactly from the DIRECT-QUOTE SOURCE below. Everything else must be clearly written as paraphrase, summary, or inference without quotation marks.
+2. Before every put_page call, run a self-check: every double-quoted phrase in the markdown content must appear verbatim in the DIRECT-QUOTE SOURCE. If it does not, remove the quotation marks and label it as a paraphrase/inference.
+3. Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., \`[ref](people/jane-doe)\` or \`[[people/jane-doe]]\`) to existing brain content. Use the search tool to find existing pages first.
+4. Do NOT write to any path outside the allow-list shown in the put_page schema.
+5. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
 
 TASKS
 A. Reflections (self-knowledge, pattern recognition, emotional processing):
-   slug: \`wiki/personal/reflections/${dateHint}-<topic-slug>-${hashSuffix}\`
+   slug: \`personal/reflections/${dateHint}-<topic-slug>-${hashSuffix}\`
 
 B. Originals (new ideas, frames, theses, mental models):
-   slug: \`wiki/originals/ideas/${dateHint}-<idea-slug>-${hashSuffix}\`
+   slug: \`ideas/${dateHint}-<idea-slug>-${hashSuffix}\`
 
 C. People mentions: search first; if a page exists, do not put_page over it (the orchestrator handles people enrichment via timeline entries — your job is the reflection/original synthesis, NOT modifying existing person pages).
 
 D. If nothing in this transcript meets the bar (significance filter already passed but the content is still routine), return without writing anything.
+
+DIRECT-QUOTE SOURCE
+Only text in this block may be presented inside quotation marks:
+---
+${extractDirectQuoteSource(t.content) || '[none detected — do not use quotation marks]'}
+---
 
 TRANSCRIPT (${t.filePath})
 ---
@@ -530,6 +539,24 @@ ${t.content}
 ---
 
 When done, briefly list the slugs you wrote in your final message so the orchestrator can audit.`;
+}
+
+export function extractDirectQuoteSource(content: string): string {
+  const parts: string[] = [];
+  const quoted = content.matchAll(/"([^"\n]+)"|“([^”\n]+)”/g);
+  for (const match of quoted) {
+    const span = (match[1] ?? match[2] ?? '').trim();
+    if (span.length > 0) parts.push(span);
+  }
+
+  for (const line of content.split(/\r?\n/)) {
+    if (/^\s*(Jordan|User|Human)\s*:/i.test(line)) {
+      const cleaned = line.replace(/^\s*(Jordan|User|Human)\s*:\s*/i, '').trim();
+      if (cleaned.length > 0) parts.push(cleaned);
+    }
+  }
+
+  return [...new Set(parts)].join('\n');
 }
 
 function sanitizeForSlug(s: string): string {
@@ -548,12 +575,16 @@ async function collectChildPutPageSlugs(
 ): Promise<string[]> {
   if (childIds.length === 0) return [];
   const rows = await engine.executeRaw<{ slug: string }>(
-    `SELECT DISTINCT input->>'slug' AS slug
+    `SELECT DISTINCT
+        CASE
+          WHEN jsonb_typeof(input) = 'object' THEN input->>'slug'
+          WHEN jsonb_typeof(input) = 'string' THEN (input #>> '{}')::jsonb->>'slug'
+          ELSE NULL
+        END AS slug
        FROM subagent_tool_executions
       WHERE job_id = ANY($1::int[])
         AND tool_name = 'brain_put_page'
         AND status = 'complete'
-        AND input ? 'slug'
       ORDER BY 1`,
     [childIds],
   );
