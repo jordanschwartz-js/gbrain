@@ -1287,24 +1287,30 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN IF NOT EXISTS error_message TEXT;
 
       -- Backfill agent_name on existing rows so the new "agent" column in
-      -- the request log isn't blank for pre-v0.26.3 entries. LEFT JOIN
-      -- pattern: prefer client_name from oauth_clients (current behavior),
-      -- fall back to access_tokens.name (legacy bearer tokens), fall back
-      -- to the raw client_id stored as token_name.
-      UPDATE mcp_request_log m
-      SET agent_name = COALESCE(
-        (SELECT client_name FROM oauth_clients WHERE client_id = m.token_name LIMIT 1),
-        (SELECT name FROM access_tokens WHERE name = m.token_name LIMIT 1),
-        m.token_name
-      )
-      WHERE agent_name IS NULL;
+      -- the request log isn't blank for pre-v0.26.3 entries. Use dynamic SQL
+      -- so Postgres plans the statement after the column additions above run.
+      DO $gbrain_v33$
+      BEGIN
+        EXECUTE '
+          UPDATE mcp_request_log m
+          SET agent_name = COALESCE(
+            (SELECT client_name FROM oauth_clients WHERE client_id = m.token_name LIMIT 1),
+            (SELECT name FROM access_tokens WHERE name = m.token_name LIMIT 1),
+            m.token_name
+          )
+          WHERE agent_name IS NULL
+        ';
 
-      -- Index for the new agent filter on /admin/api/request-log. The
-      -- existing idx_mcp_log_time_agent (created_at, token_name) doesn't
-      -- help when filtering by the resolved agent_name. Use DESC on
-      -- created_at to match the typical ORDER BY clause.
-      CREATE INDEX IF NOT EXISTS idx_mcp_log_agent_time
-        ON mcp_request_log(agent_name, created_at DESC);
+        -- Index for the new agent filter on /admin/api/request-log. The
+        -- existing idx_mcp_log_time_agent (created_at, token_name) doesn't
+        -- help when filtering by the resolved agent_name. Use DESC on
+        -- created_at to match the typical ORDER BY clause.
+        EXECUTE '
+          CREATE INDEX IF NOT EXISTS idx_mcp_log_agent_time
+            ON mcp_request_log(agent_name, created_at DESC)
+        ';
+      END
+      $gbrain_v33$;
     `,
   },
   {
