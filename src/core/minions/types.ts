@@ -426,6 +426,21 @@ export interface SubagentHandlerData {
   /** Template variables for subagent_def. Arbitrary JSON-serializable. */
   input_vars?: Record<string, unknown>;
   /**
+   * Connected-gbrains brain id (v0.19+, PR 0 plumbing only).
+   *
+   * CURRENT BEHAVIOR: stamped onto every tool-call's `OperationContext.
+   * brainId` but NOT yet used to select an engine at dispatch time.
+   * `gbrain agent run` does not yet accept a `--brain` flag that would
+   * populate this field — all subagent jobs submitted by the CLI today
+   * default to the host engine. The field + handler acceptance exist so
+   * PR 1 can add the registry lookup + CLI flag in a single commit.
+   *
+   * FUTURE (PR 1): setting `brain_id: "yc-media"` at job submission will
+   * cause every tool call from the subagent to run against the yc-media
+   * engine via BrainRegistry.getBrain() at buildOpContext time.
+   */
+  brain_id?: string;
+  /**
    * Optional trusted source text for dream-synthesis quote fidelity checks.
    * When set, brain_put_page calls reject double-quoted prose unless the quoted
    * text appears exactly in this source. This is set only by trusted cycle
