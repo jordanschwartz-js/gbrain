@@ -35,6 +35,8 @@ export interface PageInput {
   timeline?: string;
   frontmatter?: Record<string, unknown>;
   content_hash?: string;
+  /** Multi-source writes target this source row; omitted keeps default-source back-compat. */
+  source_id?: string;
   /**
    * v0.19.0: distinguishes markdown vs code pages at the DB level. Defaults
    * to 'markdown' when omitted so existing callers work unchanged. Set to

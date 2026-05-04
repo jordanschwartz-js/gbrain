@@ -361,6 +361,62 @@ describe('performSync dry-run never writes', () => {
   });
 });
 
+describe('performSync source-scoped code sync', () => {
+  let engine: PGLiteEngine;
+  let repoPath: string;
+
+  beforeAll(async () => {
+    engine = new PGLiteEngine();
+    await engine.connect({});
+    await engine.initSchema();
+  });
+
+  afterAll(async () => {
+    await engine.disconnect();
+  });
+
+  beforeEach(async () => {
+    await resetPgliteState(engine);
+    repoPath = mkdtempSync(join(tmpdir(), 'gbrain-sync-code-source-'));
+    execSync('git init', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.email "test@test.com"', { cwd: repoPath, stdio: 'pipe' });
+    execSync('git config user.name "Test"', { cwd: repoPath, stdio: 'pipe' });
+    mkdirSync(join(repoPath, 'src'), { recursive: true });
+    writeFileSync(join(repoPath, 'src/example.ts'), 'export function sourceScopedCodeSync() { return 42; }\n');
+    writeFileSync(join(repoPath, 'AGENTS.md'), '# Repo instructions\n\nThis should not be imported by strategy=code.\n');
+    execSync('git add -A && git commit -m "initial"', { cwd: repoPath, stdio: 'pipe' });
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config)
+       VALUES ('codesrc', 'codesrc', $1, '{}'::jsonb)`,
+      [repoPath],
+    );
+  });
+
+  afterEach(() => {
+    if (repoPath) rmSync(repoPath, { recursive: true, force: true });
+  });
+
+  test('first sync imports code into the requested source only', async () => {
+    const { performSync } = await import('../src/commands/sync.ts');
+    const result = await performSync(engine, {
+      sourceId: 'codesrc',
+      strategy: 'code',
+      noPull: true,
+      noEmbed: true,
+    });
+
+    expect(result.status).toBe('first_sync');
+    expect(await engine.getPage('src-example-ts', { sourceId: 'codesrc' })).not.toBeNull();
+    expect(await engine.getPage('src-example-ts', { sourceId: 'default' })).toBeNull();
+    expect(await engine.getPage('agents', { sourceId: 'codesrc' })).toBeNull();
+
+    const rows = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT source_id, slug FROM pages ORDER BY source_id, slug`,
+    );
+    expect(rows).toEqual([{ source_id: 'codesrc', slug: 'src-example-ts' }]);
+  });
+});
+
 describe('sync regression — #132 nested transaction deadlock', () => {
   test('src/commands/sync.ts does not wrap the add/modify loop in engine.transaction()', async () => {
     const source = await Bun.file(new URL('../src/commands/sync.ts', import.meta.url)).text();

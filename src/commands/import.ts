@@ -29,7 +29,11 @@ export interface RunImportResult {
   failures: Array<{ path: string; error: string }>;
 }
 
-export async function runImport(engine: BrainEngine, args: string[], opts: { commit?: string } = {}): Promise<RunImportResult> {
+export async function runImport(
+  engine: BrainEngine,
+  args: string[],
+  opts: { commit?: string; sourceId?: string; strategy?: 'markdown' | 'code' | 'auto' } = {},
+): Promise<RunImportResult> {
   const noEmbed = args.includes('--no-embed');
   const fresh = args.includes('--fresh');
   const jsonOutput = args.includes('--json');
@@ -57,9 +61,10 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
   }
   const dir: string = dirArg;  // narrowed; survives closure capture
 
-  // Collect all .md files
-  const allFiles = collectMarkdownFiles(dir);
-  console.log(`Found ${allFiles.length} markdown files`);
+  // Collect all files allowed by the selected strategy. Default stays markdown
+  // for `gbrain import`; sync --strategy code passes opts.strategy='code'.
+  const allFiles = collectSyncableFiles(dir, opts.strategy ?? 'markdown');
+  console.log(`Found ${allFiles.length} ${opts.strategy ?? 'markdown'} files`);
 
   // Resume from checkpoint if available
   const checkpointPath = gbrainPath('import-checkpoint.json');
@@ -106,7 +111,7 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
   async function processFile(eng: BrainEngine, filePath: string) {
     const relativePath = relative(dir, filePath);
     try {
-      const result = await importFile(eng, filePath, relativePath, { noEmbed });
+      const result = await importFile(eng, filePath, relativePath, { noEmbed, sourceId: opts.sourceId });
       if (result.status === 'imported') {
         imported++;
         chunksCreated += result.chunks;
@@ -262,7 +267,7 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
     // Not a git repo or git not available
   }
 
-  if (gitHead) {
+  if (gitHead && !opts.sourceId) {
     // Record failures into the central JSONL so doctor can surface them.
     // Use gitHead as the commit so a later sync can tell "same broken
     // state as last time" from "new broken state."
@@ -287,6 +292,10 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
 }
 
 export function collectMarkdownFiles(dir: string): string[] {
+  return collectSyncableFiles(dir, 'markdown');
+}
+
+export function collectSyncableFiles(dir: string, strategy: 'markdown' | 'code' | 'auto' = 'markdown'): string[] {
   const files: string[] = [];
 
   function walk(d: string) {
@@ -323,9 +332,9 @@ export function collectMarkdownFiles(dir: string): string[] {
 
       if (stat.isDirectory()) {
         walk(full);
-      } else if (entry.endsWith('.md') || entry.endsWith('.mdx')) {
+      } else {
         const relPath = relative(dir, full);
-        if (isSyncable(relPath)) {
+        if (isSyncable(relPath, { strategy })) {
           files.push(full);
         }
       }

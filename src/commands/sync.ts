@@ -432,9 +432,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   for (const path of unsyncableModified) {
     const slug = resolveSlugForPath(path);
     try {
-      const existing = await engine.getPage(slug);
+      const sourceOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+      const existing = await engine.getPage(slug, sourceOpts);
       if (existing) {
-        await engine.deletePage(slug);
+        await engine.deletePage(slug, sourceOpts);
         console.log(`  Deleted un-syncable page: ${slug}`);
       }
     } catch { /* ignore */ }
@@ -500,7 +501,8 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     progress.start('sync.deletes', filtered.deleted.length);
     for (const path of filtered.deleted) {
       const slug = resolveSlugForPath(path);
-      await engine.deletePage(slug);
+      const sourceOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+      await engine.deletePage(slug, sourceOpts);
       pagesAffected.push(slug);
       progress.tick(1, slug);
     }
@@ -517,14 +519,14 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       const oldSlug = resolveSlugForPath(from);
       const newSlug = resolveSlugForPath(to);
       try {
-        await engine.updateSlug(oldSlug, newSlug);
+        await engine.updateSlug(oldSlug, newSlug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
       } catch {
         // Slug doesn't exist or collision, treat as add
       }
       // Reimport at new path (picks up content changes)
       const filePath = join(repoPath, to);
       if (existsSync(filePath)) {
-        const result = await importFile(engine, filePath, to, { noEmbed });
+        const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') chunksCreated += result.chunks;
       }
       pagesAffected.push(newSlug);
@@ -579,7 +581,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         return;
       }
       try {
-        const result = await importFile(eng, filePath, path, { noEmbed });
+        const result = await importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -800,11 +802,12 @@ async function performFullSync(
   // Fixes the silent-write-on-dry-run bug where performFullSync called
   // runImport unconditionally regardless of opts.dryRun.
   if (opts.dryRun) {
-    const { collectMarkdownFiles } = await import('./import.ts');
-    const allFiles = collectMarkdownFiles(repoPath);
+    const { collectSyncableFiles } = await import('./import.ts');
+    const strategy = opts.strategy ?? 'markdown';
+    const allFiles = collectSyncableFiles(repoPath, strategy);
     const syncableRelPaths = allFiles
       .map(abs => relative(repoPath, abs))
-      .filter(rel => isSyncable(rel));
+      .filter(rel => isSyncable(rel, { strategy }));
     console.log(
       `Full-sync dry run: ${syncableRelPaths.length} file(s) would be imported ` +
       `from ${repoPath} @ ${headCommit.slice(0, 8)}.`,
@@ -835,7 +838,11 @@ async function performFullSync(
   const importArgs = [repoPath];
   if (opts.noEmbed) importArgs.push('--no-embed');
   if (fullConcurrency > 1) importArgs.push('--workers', String(fullConcurrency));
-  const result = await runImport(engine, importArgs, { commit: headCommit });
+  const result = await runImport(engine, importArgs, {
+    commit: headCommit,
+    sourceId: opts.sourceId,
+    strategy: opts.strategy ?? 'markdown',
+  });
 
   // Bug 9 — gate the full-sync bookmark on success. runImport already
   // writes its own sync.last_commit conditionally (import.ts), but
