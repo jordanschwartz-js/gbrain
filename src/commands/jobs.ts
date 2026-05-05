@@ -587,10 +587,11 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
     const repoPath = typeof job.data.repoPath === 'string'
       ? job.data.repoPath
       : (await engine.getConfig('sync.repo_path')) ?? '.';
+    const pull = job.data.pull !== false;
 
     const report = await runCycle(engine, {
       brainDir: repoPath,
-      pull: true, // autopilot daemon opts into git pull
+      pull,
       yieldBetweenPhases: async () => {
         // Yield to the event loop so worker lock-renewal can fire.
         await new Promise<void>(r => setImmediate(r));
