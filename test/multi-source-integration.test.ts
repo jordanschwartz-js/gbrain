@@ -17,9 +17,16 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { spawnSync } from 'child_process';
 import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { runSources } from '../src/commands/sources.ts';
+import { runSync } from '../src/commands/sync.ts';
 import { resolveSourceId } from '../src/core/source-resolver.ts';
+import { importCodeFile } from '../src/core/import-file.ts';
+import { scanBrainSources } from '../src/core/brain-writer.ts';
 
 let engine: PGLiteEngine;
 
@@ -83,9 +90,7 @@ describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
     await runSources(engine, ['add', 'testsrc', '--no-federated']);
 
     // Sanity: default already has this slug from the previous test.
-    // Now write the same slug under testsrc via raw INSERT (putPage only
-    // targets default until a later step surfaces sourceId; raw INSERT is
-    // the "source-aware write" Step 5 continuation will add).
+    // Raw INSERT keeps this test focused on the composite UNIQUE itself.
     await engine.executeRaw(
       `INSERT INTO pages (source_id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash)
        VALUES ('testsrc', 'topics/step9-auto', 'concept', 'Step 9 Auto (testsrc variant)',
@@ -116,6 +121,126 @@ describe('v0.18.0 — composite UNIQUE allows same-slug across sources', () => {
     }
     expect(err).not.toBeNull();
     expect(err!.message.toLowerCase()).toMatch(/unique|duplicate/);
+  });
+});
+
+describe('v0.18.0 + v0.19.0 — source-aware code import', () => {
+  test('importCodeFile writes page, chunks, and tags under the requested source', async () => {
+    await runSources(engine, ['add', 'codesrc', '--no-federated']);
+
+    const result = await importCodeFile(
+      engine,
+      'src/source-aware.ts',
+      'export function sourceAwareImport() { return 42; }\n',
+      { noEmbed: true, sourceId: 'codesrc' },
+    );
+    expect(result.status).toBe('imported');
+
+    const pages = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT source_id, slug FROM pages WHERE slug = 'src-source-aware-ts' ORDER BY source_id`,
+    );
+    expect(pages).toEqual([{ source_id: 'codesrc', slug: 'src-source-aware-ts' }]);
+
+    const chunks = await engine.executeRaw<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE p.source_id = 'codesrc'
+          AND p.slug = 'src-source-aware-ts'`,
+    );
+    expect(Number(chunks[0].count)).toBeGreaterThan(0);
+
+    const tags = await engine.getTags('src-source-aware-ts', { sourceId: 'codesrc' });
+    expect(tags).toContain('code');
+    expect(tags).toContain('typescript');
+  });
+
+  test('frontmatter audit skips code-only sources', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-code-source-'));
+    try {
+      writeFileSync(join(dir, 'README.md'), '# Plain repo README\n\nNo brain frontmatter here.\n');
+      await runSources(engine, ['add', 'codeaudit', '--path', dir, '--federated']);
+      const result = await importCodeFile(
+        engine,
+        'src/code-audit.ts',
+        'export const codeAudit = 1;\n',
+        { noEmbed: true, sourceId: 'codeaudit' },
+      );
+      expect(result.status).toBe('imported');
+
+      const report = await scanBrainSources(engine, { sourceId: 'codeaudit' });
+      expect(report.ok).toBe(true);
+      expect(report.total).toBe(0);
+      expect(report.per_source).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('source-scoped delete and rename leave same-slug pages in other sources alone', async () => {
+    await runSources(engine, ['add', 'scopeops', '--no-federated']);
+    await engine.putPage('shared/source-scope', {
+      type: 'concept',
+      title: 'Default Shared',
+      compiled_truth: 'Default source page should survive scoped code operations.',
+    });
+    await engine.putPage('shared/source-scope', {
+      source_id: 'scopeops',
+      type: 'code',
+      page_kind: 'code',
+      title: 'shared/source-scope.ts',
+      compiled_truth: 'export const scoped = true;\n',
+      frontmatter: { language: 'typescript' },
+    });
+
+    await engine.updateSlug('shared/source-scope', 'shared/source-scope-renamed', { sourceId: 'scopeops' });
+
+    let rows = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT source_id, slug FROM pages
+        WHERE slug IN ('shared/source-scope', 'shared/source-scope-renamed')
+        ORDER BY source_id, slug`,
+    );
+    expect(rows).toEqual([
+      { source_id: 'default', slug: 'shared/source-scope' },
+      { source_id: 'scopeops', slug: 'shared/source-scope-renamed' },
+    ]);
+
+    await engine.deletePage('shared/source-scope-renamed', { sourceId: 'scopeops' });
+
+    rows = await engine.executeRaw<{ source_id: string; slug: string }>(
+      `SELECT source_id, slug FROM pages
+        WHERE slug IN ('shared/source-scope', 'shared/source-scope-renamed')
+        ORDER BY source_id, slug`,
+    );
+    expect(rows).toEqual([{ source_id: 'default', slug: 'shared/source-scope' }]);
+  });
+
+  test('sync dry-run does not persist requested source strategy', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gbrain-dry-run-source-'));
+    try {
+      spawnSync('git', ['init'], { cwd: dir, stdio: 'ignore' });
+      writeFileSync(join(dir, 'index.ts'), 'export const dryRunStrategy = true;\n');
+      spawnSync('git', ['add', 'index.ts'], { cwd: dir, stdio: 'ignore' });
+      const commit = spawnSync(
+        'git',
+        ['-c', 'user.email=test@example.com', '-c', 'user.name=Test User', 'commit', '-m', 'init'],
+        { cwd: dir, stdio: 'ignore' },
+      );
+      expect(commit.status).toBe(0);
+
+      await runSources(engine, ['add', 'drycodesrc', '--path', dir, '--federated']);
+      await runSync(engine, ['--source', 'drycodesrc', '--strategy', 'code', '--dry-run', '--no-pull']);
+
+      const rows = await engine.executeRaw<{ config: string | Record<string, unknown> }>(
+        `SELECT config FROM sources WHERE id = 'drycodesrc'`,
+      );
+      const config = typeof rows[0].config === 'string' ? JSON.parse(rows[0].config) : rows[0].config;
+      expect(config.strategy).toBeUndefined();
+      expect(config.sync_strategy).toBeUndefined();
+      expect(config.source_kind).toBeUndefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

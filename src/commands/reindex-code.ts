@@ -31,6 +31,7 @@ import { errorFor, serializeError } from '../core/errors.ts';
 import { createInterface } from 'readline';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { markSourceStrategy } from '../core/source-config.ts';
 
 export interface ReindexCodeOpts {
   sourceId?: string;
@@ -134,6 +135,9 @@ export async function runReindexCode(
   opts: ReindexCodeOpts = {},
 ): Promise<ReindexCodeResult> {
   const batchSize = opts.batchSize ?? 100;
+  if (opts.sourceId) {
+    await markSourceStrategy(engine, opts.sourceId, 'code');
+  }
 
   const { totalTokens, totalPages } = await estimateReindexCost(engine, opts.sourceId, batchSize);
   const costUsd = estimateEmbeddingCostUsd(totalTokens);
@@ -200,6 +204,7 @@ export async function runReindexCode(
           const result = await importCodeFile(engine, relPath, row.compiled_truth, {
             noEmbed: opts.noEmbed,
             force: opts.force,
+            sourceId: opts.sourceId,
           });
           if (result.status === 'imported') reindexed++;
           else if (result.status === 'skipped') skipped++;

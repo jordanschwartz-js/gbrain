@@ -140,16 +140,18 @@ async function embedPage(
   slug: string,
   dryRun: boolean,
   result: EmbedResult,
+  sourceId?: string,
 ) {
-  const page = await engine.getPage(slug);
+  const sourceOpts = sourceId ? { sourceId } : undefined;
+  const page = await engine.getPage(slug, sourceOpts);
   if (!page) {
-    throw new Error(`Page not found: ${slug}`);
+    throw new Error(`Page not found: ${sourceId ? `${sourceId}:` : ''}${slug}`);
   }
 
   // Get existing chunks or create new ones.
   // In dryRun, we still chunk the text locally to count what WOULD be
   // embedded — but we never write chunks or call the embedding model.
-  let chunks = await engine.getChunks(slug);
+  let chunks = await engine.getChunks(slug, sourceOpts);
   if (chunks.length === 0) {
     const inputs: ChunkInput[] = [];
     if (page.compiled_truth.trim()) {
@@ -172,8 +174,8 @@ async function embedPage(
     }
 
     if (inputs.length > 0) {
-      await engine.upsertChunks(slug, inputs);
-      chunks = await engine.getChunks(slug);
+      await engine.upsertChunks(slug, inputs, sourceOpts);
+      chunks = await engine.getChunks(slug, sourceOpts);
     }
   }
 
@@ -199,15 +201,9 @@ async function embedPage(
   for (let j = 0; j < toEmbed.length; j++) {
     embeddingMap.set(toEmbed[j].chunk_index, embeddings[j]);
   }
-  const updated: ChunkInput[] = chunks.map(c => ({
-    chunk_index: c.chunk_index,
-    chunk_text: c.chunk_text,
-    chunk_source: c.chunk_source,
-    embedding: embeddingMap.get(c.chunk_index),
-    token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
-  }));
+  const updated: ChunkInput[] = chunks.map(c => chunkToInput(c, embeddingMap.get(c.chunk_index)));
 
-  await engine.upsertChunks(slug, updated);
+  await engine.upsertChunks(slug, updated, sourceOpts);
   result.embedded += toEmbed.length;
   result.pages_processed++;
   console.log(`${slug}: embedded ${toEmbed.length} chunks`);
@@ -242,16 +238,16 @@ async function embedAll(
 
   // Concurrency limit for parallel page embedding.
   // Each worker pulls pages from a shared queue and makes independent
-  // embedBatch calls to OpenAI + upsertChunks to the engine.
+  // embedBatch calls to the configured provider + upsertChunks to the engine.
   //
-  // Default 20: keeps us well under OpenAI's embedding RPM limit
-  // (3000+/min for tier 1 = 50+/sec, 20 parallel is safely below) and
-  // avoids overwhelming postgres connection pools. Users can tune via
-  // GBRAIN_EMBED_CONCURRENCY env var based on their tier/infra.
+  // Default 20: keeps provider/API concurrency reasonable and avoids
+  // overwhelming postgres connection pools. Users can tune via
+  // GBRAIN_EMBED_CONCURRENCY env var based on their provider tier/infra.
   const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
 
   async function embedOnePage(page: typeof pages[number]) {
-    const chunks = await engine.getChunks(page.slug);
+    const sourceOpts = page.source_id ? { sourceId: page.source_id } : undefined;
+    const chunks = await engine.getChunks(page.slug, sourceOpts);
     const toEmbed = chunks; // staleOnly path handled above via embedAllStale
 
     result.total_chunks += chunks.length;
@@ -280,14 +276,8 @@ async function embedAll(
         embeddingMap.set(toEmbed[j].chunk_index, embeddings[j]);
       }
       // Preserve ALL chunks, only update embeddings for stale ones
-      const updated: ChunkInput[] = chunks.map(c => ({
-        chunk_index: c.chunk_index,
-        chunk_text: c.chunk_text,
-        chunk_source: c.chunk_source,
-        embedding: embeddingMap.get(c.chunk_index) ?? undefined,
-        token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
-      }));
-      await engine.upsertChunks(page.slug, updated);
+      const updated: ChunkInput[] = chunks.map(c => chunkToInput(c, embeddingMap.get(c.chunk_index)));
+      await engine.upsertChunks(page.slug, updated, sourceOpts);
       result.embedded += toEmbed.length;
     } catch (e: unknown) {
       console.error(`\n  Error embedding ${page.slug}: ${e instanceof Error ? e.message : e}`);
@@ -360,15 +350,18 @@ async function embedAllStale(
 
   // Pull only the stale chunks (no embedding column).
   const staleRows = await engine.listStaleChunks();
-  // Group by slug so each slug → array of stale chunks for batched embedding.
-  const bySlug = new Map<string, typeof staleRows>();
+  // Group by source+slug so same-slug pages in different sources do not collide.
+  const byPage = new Map<string, typeof staleRows>();
   for (const row of staleRows) {
-    const list = bySlug.get(row.slug);
+    const list = byPage.get(stalePageKey(row.source_id, row.slug));
     if (list) list.push(row);
-    else bySlug.set(row.slug, [row]);
+    else byPage.set(stalePageKey(row.source_id, row.slug), [row]);
   }
 
-  const slugs = Array.from(bySlug.keys());
+  const stalePages = Array.from(byPage.values()).map(rows => ({
+    sourceId: rows[0].source_id,
+    slug: rows[0].slug,
+  }));
   const totalStaleChunks = staleRows.length;
   result.total_chunks += totalStaleChunks;
   // skipped is "chunks we considered and skipped due to having an embedding".
@@ -378,21 +371,22 @@ async function embedAllStale(
 
   if (dryRun) {
     result.would_embed += totalStaleChunks;
-    result.pages_processed += slugs.length;
+    result.pages_processed += stalePages.length;
     if (onProgress) {
       // Emit a single tick to satisfy the contract (CLI progress reporters
       // expect at least one start/finish pair).
-      onProgress(slugs.length, slugs.length, 0);
+      onProgress(stalePages.length, stalePages.length, 0);
     }
-    console.log(`[dry-run] Would embed ${totalStaleChunks} chunks across ${slugs.length} pages`);
+    console.log(`[dry-run] Would embed ${totalStaleChunks} chunks across ${stalePages.length} pages`);
     return;
   }
 
   const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
   let processed = 0;
 
-  async function embedOneSlug(slug: string) {
-    const stale = bySlug.get(slug)!;
+  async function embedOnePage(page: { sourceId?: string; slug: string }) {
+    const sourceOpts = page.sourceId ? { sourceId: page.sourceId } : undefined;
+    const stale = byPage.get(stalePageKey(page.sourceId, page.slug))!;
     try {
       const embeddings = await embedBatch(stale.map(c => c.chunk_text));
       // CRITICAL: passing ONLY the stale indices to upsertChunks would
@@ -401,40 +395,57 @@ async function embedAllStale(
       // re-fetch existing chunks for this page and merge. Bounded by the
       // stale slug count, not by total slugs — autopilot common case
       // is 0 stale (pre-flight short-circuit, never reaches this path).
-      const existing = await engine.getChunks(slug);
+      const existing = await engine.getChunks(page.slug, sourceOpts);
       const staleIdxToEmbedding = new Map<number, Float32Array>();
       for (let j = 0; j < stale.length; j++) {
         staleIdxToEmbedding.set(stale[j].chunk_index, embeddings[j]);
       }
-      const merged: ChunkInput[] = existing.map(c => ({
-        chunk_index: c.chunk_index,
-        chunk_text: c.chunk_text,
-        chunk_source: c.chunk_source,
-        // For stale chunks: pass the new embedding.
-        // For non-stale chunks: pass undefined → COALESCE preserves existing embedding.
-        embedding: staleIdxToEmbedding.get(c.chunk_index) ?? undefined,
-        token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
-      }));
-      await engine.upsertChunks(slug, merged);
+      const merged: ChunkInput[] = existing.map(c => chunkToInput(c, staleIdxToEmbedding.get(c.chunk_index)));
+      await engine.upsertChunks(page.slug, merged, sourceOpts);
       result.embedded += stale.length;
     } catch (e: unknown) {
-      console.error(`\n  Error embedding ${slug}: ${e instanceof Error ? e.message : e}`);
+      console.error(`\n  Error embedding ${page.sourceId ? `${page.sourceId}:` : ''}${page.slug}: ${e instanceof Error ? e.message : e}`);
     }
     processed++;
     result.pages_processed++;
-    onProgress?.(processed, slugs.length, result.embedded);
+    onProgress?.(processed, stalePages.length, result.embedded);
   }
 
   let nextIdx = 0;
   async function worker() {
-    while (nextIdx < slugs.length) {
+    while (nextIdx < stalePages.length) {
       const idx = nextIdx++;
-      await embedOneSlug(slugs[idx]);
+      await embedOnePage(stalePages[idx]);
     }
   }
 
-  const numWorkers = Math.min(CONCURRENCY, slugs.length);
+  const numWorkers = Math.min(CONCURRENCY, stalePages.length);
   await Promise.all(Array.from({ length: numWorkers }, () => worker()));
 
-  console.log(`Embedded ${result.embedded} chunks across ${slugs.length} pages`);
+  console.log(`Embedded ${result.embedded} chunks across ${stalePages.length} pages`);
+}
+
+function stalePageKey(sourceId: string | undefined, slug: string): string {
+  return `${sourceId ?? ''}\0${slug}`;
+}
+
+function chunkToInput(
+  chunk: Awaited<ReturnType<BrainEngine['getChunks']>>[number],
+  embedding?: Float32Array,
+): ChunkInput {
+  return {
+    chunk_index: chunk.chunk_index,
+    chunk_text: chunk.chunk_text,
+    chunk_source: chunk.chunk_source,
+    embedding,
+    token_count: chunk.token_count || Math.ceil(chunk.chunk_text.length / 4),
+    language: chunk.language ?? undefined,
+    symbol_name: chunk.symbol_name ?? undefined,
+    symbol_type: chunk.symbol_type ?? undefined,
+    start_line: chunk.start_line ?? undefined,
+    end_line: chunk.end_line ?? undefined,
+    parent_symbol_path: chunk.parent_symbol_path ?? undefined,
+    doc_comment: chunk.doc_comment ?? undefined,
+    symbol_name_qualified: chunk.symbol_name_qualified ?? undefined,
+  };
 }

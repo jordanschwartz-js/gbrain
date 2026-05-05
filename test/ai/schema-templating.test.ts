@@ -23,6 +23,14 @@ describe('getPGLiteSchema', () => {
     expect(sql).toMatch(/'voyage-3-large'/);
   });
 
+  test('large local embeddings use halfvec-compatible HNSW indexes', () => {
+    const sql = getPGLiteSchema(2560, 'qwen3-embedding:4b');
+    expect(sql).toMatch(/halfvec\(2560\)/);
+    expect(sql).toMatch(/halfvec_cosine_ops/);
+    expect(sql).not.toMatch(/vector\(2560\)/);
+    expect(sql).not.toMatch(/embedding vector_cosine_ops/);
+  });
+
   test('PGLITE_SCHEMA_SQL back-compat constant is the default-dim schema', () => {
     expect(PGLITE_SCHEMA_SQL).toBe(getPGLiteSchema());
   });

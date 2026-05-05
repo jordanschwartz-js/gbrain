@@ -79,7 +79,8 @@ function printHelp(): void {
 
 USAGE
   gbrain providers list                                   List all known providers + status
-  gbrain providers test [--touchpoint T] [--model ID]     Smoke-test configured (or specified) providers
+  gbrain providers test [--touchpoint T] [--model ID] [--dimensions N]
+                                                            Smoke-test configured (or specified) providers
   gbrain providers env <id>                               Show env vars required/optional for a provider
   gbrain providers explain [--json]                       Emit a provider choice matrix (agent-friendly)
 
@@ -90,6 +91,7 @@ TOUCHPOINTS
 EXAMPLES
   gbrain providers list
   gbrain providers test --model openai:text-embedding-3-large
+  gbrain providers test --model ollama:qwen3-embedding:4b --dimensions 2560
   gbrain providers test --touchpoint chat --model anthropic:claude-haiku-4-5
   gbrain providers test --touchpoint chat --model deepseek:deepseek-chat
   gbrain providers env ollama
@@ -123,6 +125,8 @@ function runList(_args: string[]): void {
 async function runTest(args: string[]): Promise<void> {
   const modelIdx = args.indexOf('--model');
   const modelArg = modelIdx >= 0 ? args[modelIdx + 1] : undefined;
+  const dimsIdx = args.indexOf('--dimensions') >= 0 ? args.indexOf('--dimensions') : args.indexOf('--dims');
+  const dimsArg = dimsIdx >= 0 ? args[dimsIdx + 1] : undefined;
 
   const tpIdx = args.indexOf('--touchpoint');
   const tpArg = (tpIdx >= 0 ? args[tpIdx + 1] : 'embedding') as TouchpointFilter;
@@ -132,13 +136,34 @@ async function runTest(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  let explicitDims: number | undefined;
+  if (dimsArg) {
+    explicitDims = Number.parseInt(dimsArg, 10);
+    if (!Number.isFinite(explicitDims) || explicitDims <= 0) {
+      console.error(`--dimensions must be a positive integer (got: ${dimsArg}).`);
+      process.exit(1);
+    }
+  }
+
   // If --model passed, override gateway for this test (touchpoint-aware).
   if (modelArg) {
     const [providerId, ...modelParts] = modelArg.split(':');
     const modelId = modelParts.join(':');
     const recipe = getRecipe(providerId);
     if (tpArg === 'embedding') {
-      const dims = recipe?.touchpoints.embedding?.default_dims ?? 1536;
+      const config = loadConfig();
+      const configuredModel = config?.embedding_model;
+      const configuredModelId = configuredModel?.split(':').slice(1).join(':') || configuredModel;
+      const configuredDims = typeof config?.embedding_dimensions === 'number'
+        ? config.embedding_dimensions
+        : undefined;
+      const modelMatchesConfig = configuredModel === modelArg
+        || configuredModel === modelId
+        || configuredModelId === modelId;
+      const dims = explicitDims
+        ?? (modelMatchesConfig ? configuredDims : undefined)
+        ?? recipe?.touchpoints.embedding?.default_dims
+        ?? 1536;
       configureGateway({
         embedding_model: modelArg,
         embedding_dimensions: dims,

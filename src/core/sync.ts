@@ -26,6 +26,15 @@ export interface RawManifestEntry {
 
 export type SyncStrategy = 'markdown' | 'code' | 'auto';
 
+export function parseSyncStrategy(
+  value: string | undefined,
+  fallback: SyncStrategy = 'markdown',
+): SyncStrategy {
+  if (value === undefined) return fallback;
+  if (value === 'markdown' || value === 'code' || value === 'auto') return value;
+  throw new Error(`Invalid sync strategy "${value}". Expected one of: markdown, code, auto.`);
+}
+
 interface SyncableOptions {
   strategy?: SyncStrategy;
   include?: string[];

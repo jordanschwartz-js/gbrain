@@ -24,6 +24,7 @@ import {
   type ParseValidationError,
 } from './markdown.ts';
 import { isSyncable, slugifyPath } from './sync.ts';
+import { isCodeSourceLike } from './source-config.ts';
 
 export type { ParseValidationCode };
 
@@ -236,6 +237,9 @@ export function writeBrainPage(
 interface SourceRow {
   id: string;
   local_path: string | null;
+  config?: unknown;
+  code_pages?: number | string;
+  markdown_pages?: number | string;
 }
 
 export interface ScanOpts {
@@ -258,6 +262,10 @@ export async function scanBrainSources(
   for (const src of sources) {
     if (opts.signal?.aborted) break;
     if (!src.local_path) continue;
+    if (isCodeSourceLike(src.config, {
+      codePages: Number(src.code_pages ?? 0),
+      markdownPages: Number(src.markdown_pages ?? 0),
+    })) continue;
     if (!existsSync(src.local_path)) {
       // Source registered but path is missing on disk; surface as a zero-row
       // entry with a synthetic SCAN_PATH_MISSING note via warn-and-skip.
@@ -383,12 +391,25 @@ function walkDir(root: string, visit: (absPath: string) => boolean | void): void
 async function listSources(engine: BrainEngine, sourceId?: string): Promise<SourceRow[]> {
   if (sourceId) {
     const rows = await engine.executeRaw<SourceRow>(
-      `SELECT id, local_path FROM sources WHERE id = $1`,
+      `SELECT s.id, s.local_path, s.config,
+              COUNT(p.id) FILTER (WHERE COALESCE(p.page_kind, 'markdown') = 'code' OR p.type = 'code') AS code_pages,
+              COUNT(p.id) FILTER (WHERE COALESCE(p.page_kind, 'markdown') <> 'code' AND p.type <> 'code') AS markdown_pages
+         FROM sources s
+         LEFT JOIN pages p ON p.source_id = s.id
+        WHERE s.id = $1
+        GROUP BY s.id, s.local_path, s.config`,
       [sourceId],
     );
     return rows;
   }
   return engine.executeRaw<SourceRow>(
-    `SELECT id, local_path FROM sources WHERE local_path IS NOT NULL ORDER BY id`,
+    `SELECT s.id, s.local_path, s.config,
+            COUNT(p.id) FILTER (WHERE COALESCE(p.page_kind, 'markdown') = 'code' OR p.type = 'code') AS code_pages,
+            COUNT(p.id) FILTER (WHERE COALESCE(p.page_kind, 'markdown') <> 'code' AND p.type <> 'code') AS markdown_pages
+       FROM sources s
+       LEFT JOIN pages p ON p.source_id = s.id
+      WHERE s.local_path IS NOT NULL
+      GROUP BY s.id, s.local_path, s.config
+      ORDER BY s.id`,
   );
 }

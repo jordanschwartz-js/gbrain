@@ -63,6 +63,13 @@ const REQUIRED_BOOTSTRAP_COVERAGE: ForwardReference[] = [
   // v0.26.5 — forward-referenced by `CREATE INDEX pages_deleted_at_purge_idx
   // ON pages (deleted_at) WHERE deleted_at IS NOT NULL`.
   { kind: 'column', table: 'pages', column: 'deleted_at' },
+  // v0.27 — forward-referenced by `CREATE INDEX idx_subagent_messages_provider
+  // ON subagent_messages (job_id, provider_id)`.
+  { kind: 'column', table: 'subagent_messages', column: 'schema_version' },
+  { kind: 'column', table: 'subagent_messages', column: 'provider_id' },
+  // v0.27 — kept in lockstep with subagent_messages provider-neutral storage.
+  { kind: 'column', table: 'subagent_tool_executions', column: 'schema_version' },
+  { kind: 'column', table: 'subagent_tool_executions', column: 'provider_id' },
 ];
 
 test('applyForwardReferenceBootstrap covers every forward reference declared in REQUIRED_BOOTSTRAP_COVERAGE', async () => {
@@ -95,6 +102,12 @@ test('applyForwardReferenceBootstrap covers every forward reference declared in 
 
       DROP INDEX IF EXISTS pages_deleted_at_purge_idx;
       ALTER TABLE pages DROP COLUMN IF EXISTS deleted_at;
+
+      DROP INDEX IF EXISTS idx_subagent_messages_provider;
+      ALTER TABLE subagent_messages DROP COLUMN IF EXISTS schema_version;
+      ALTER TABLE subagent_messages DROP COLUMN IF EXISTS provider_id;
+      ALTER TABLE subagent_tool_executions DROP COLUMN IF EXISTS schema_version;
+      ALTER TABLE subagent_tool_executions DROP COLUMN IF EXISTS provider_id;
     `);
 
     // Run bootstrap in isolation (NOT initSchema). This is what we're testing.
@@ -150,6 +163,11 @@ test('after bootstrap, PGLITE_SCHEMA_SQL replays without crashing on missing for
       ALTER TABLE links DROP COLUMN IF EXISTS origin_page_id;
       DROP INDEX IF EXISTS pages_deleted_at_purge_idx;
       ALTER TABLE pages DROP COLUMN IF EXISTS deleted_at;
+      DROP INDEX IF EXISTS idx_subagent_messages_provider;
+      ALTER TABLE subagent_messages DROP COLUMN IF EXISTS schema_version;
+      ALTER TABLE subagent_messages DROP COLUMN IF EXISTS provider_id;
+      ALTER TABLE subagent_tool_executions DROP COLUMN IF EXISTS schema_version;
+      ALTER TABLE subagent_tool_executions DROP COLUMN IF EXISTS provider_id;
     `);
 
     // Bootstrap, then schema replay. Either step crashing fails the test.

@@ -9,8 +9,12 @@ export type PageType = 'person' | 'company' | 'deal' | 'yc' | 'civic' | 'project
 
 export interface Page {
   id: number;
+  /** v0.18.0 multi-source owner. Optional for legacy/selective projections. */
+  source_id?: string;
   slug: string;
   type: PageType;
+  /** v0.19.0 DB-level page classifier; optional for legacy/selective projections. */
+  page_kind?: PageKind;
   title: string;
   compiled_truth: string;
   timeline: string;
@@ -35,6 +39,8 @@ export interface PageInput {
   timeline?: string;
   frontmatter?: Record<string, unknown>;
   content_hash?: string;
+  /** v0.18.0 multi-source: target source row for this page. Defaults to 'default'. */
+  source_id?: string;
   /**
    * v0.19.0: distinguishes markdown vs code pages at the DB level. Defaults
    * to 'markdown' when omitted so existing callers work unchanged. Set to
@@ -106,6 +112,8 @@ export interface Chunk {
  * rows) embedding bytes over the wire. See `embed --stale` egress fix.
  */
 export interface StaleChunkRow {
+  /** v0.18.0 multi-source owner for the page containing this chunk. */
+  source_id?: string;
   slug: string;
   chunk_index: number;
   chunk_text: string;

@@ -139,6 +139,29 @@ describeE2E('scanIntegrity batch parity (E2E, Postgres-only)', () => {
     });
   });
 
+  describe('visibility', () => {
+    test('soft-deleted pages are skipped on both paths', async () => {
+      const engine = getEngine();
+
+      await engine.putPage('people/deleted-alice', {
+        type: 'person',
+        title: 'Deleted Alice',
+        compiled_truth: 'Deleted Alice tweeted about stale content.',
+        timeline: '',
+        frontmatter: {},
+      });
+      await engine.softDeletePage('people/deleted-alice');
+
+      const batchResult = await scanIntegrity(engine, { limit: 100, batchLoad: true });
+      const seqResult = await scanIntegrity(engine, { limit: 100, batchLoad: false });
+
+      expect(batchResult.pagesScanned).toBe(seqResult.pagesScanned);
+      expect(batchResult.pagesScanned).toBe(0);
+      expect(batchResult.bareHits.map(h => h.slug)).not.toContain('people/deleted-alice');
+      expect(seqResult.bareHits.map(h => h.slug)).not.toContain('people/deleted-alice');
+    });
+  });
+
   describe('topPages', () => {
     test('topPages ordering matches between paths', async () => {
       const engine = getEngine();

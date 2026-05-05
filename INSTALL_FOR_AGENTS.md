@@ -31,23 +31,41 @@ restart the shell or add the PATH export to the shell profile.
 > aborts with `Aborted()` when it opens PGLite. Use the `git clone + bun link` path
 > above. Tracking issue: [#218](https://github.com/garrytan/gbrain/issues/218).
 
-## Step 2: API Keys
+## Step 2: AI Providers
 
-Ask the user for these:
+GBrain uses provider-backed AI configuration. Embeddings are required for vector
+search; query expansion and chat are optional but improve answer quality. Start
+with the user's preferred stack:
 
 ```bash
-export OPENAI_API_KEY=sk-...          # required for vector search
-export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
+# Local-first example
+ollama pull qwen3-embedding:4b
+gbrain providers test --model ollama:qwen3-embedding:4b --dimensions 2560
+
+# Hosted example
+export OPENAI_API_KEY=sk-...
+gbrain providers test --model openai:text-embedding-3-large
+
+# Optional expansion/chat providers
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-Save to shell profile or `.env`. Without OpenAI, keyword search still works.
-Without Anthropic, search works but skips query expansion.
+Save provider keys and model settings to the shell profile, `.env`, or
+`~/.gbrain/config.json` as appropriate. Without a working embedding provider,
+keyword search still works but vector search cannot embed new chunks.
 
 ## Step 3: Create the Brain
 
 ```bash
 gbrain init                           # PGLite, no server needed
 gbrain doctor --json                  # verify all checks pass
+```
+
+If the user chose a non-default embedding model, pass it during init so the
+schema is created with the correct vector dimension:
+
+```bash
+gbrain init --embedding-model ollama:qwen3-embedding:4b --embedding-dimensions 2560
 ```
 
 The user's markdown files (notes, docs, brain repo) are SEPARATE from this tool repo.

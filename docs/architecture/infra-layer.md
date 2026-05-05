@@ -19,8 +19,8 @@ CHUNKING (3 strategies, configurable)
   ├── Semantic: embed sentences, cosine similarity, Savitzky-Golay smoothing
   └── LLM-guided: Claude Haiku identifies topic shifts in 128-word candidates
   ↓
-EMBEDDING (OpenAI text-embedding-3-large, 1536 dimensions)
-  → batch 100, exponential backoff, non-fatal if fails
+EMBEDDING (provider-backed model configured in the AI gateway)
+  → configured dimensions, batch 100, exponential backoff, non-fatal if fails
   ↓
 DATABASE TRANSACTION (atomic: page + chunks + tags + version)
   ↓
@@ -62,7 +62,7 @@ TOP N RESULTS (default 20)
 | `src/core/import-file.ts` | importFromFile + importFromContent pipeline |
 | `src/core/sync.ts` | Git-based incremental change detection |
 | `src/core/markdown.ts` | YAML frontmatter + compiled_truth/timeline parsing |
-| `src/core/embedding.ts` | OpenAI embedding with batch, retry, backoff |
+| `src/core/embedding.ts` | Provider-backed embedding with batch, retry, backoff |
 | `src/core/chunkers/recursive.ts` | Base chunker (300w, 5-level delimiters) |
 | `src/core/chunkers/semantic.ts` | Embedding-based topic boundary detection |
 | `src/core/chunkers/llm.ts` | Claude Haiku guided chunking |
@@ -78,7 +78,7 @@ TOP N RESULTS (default 20)
 10 tables in Postgres:
 
 - **pages** — slug (unique), type, title, compiled_truth, timeline, frontmatter (JSONB)
-- **content_chunks** — pgvector 1536-dim embedding, chunk_source (compiled_truth|timeline)
+- **content_chunks** — pgvector embedding at the configured dimension, chunk_source (compiled_truth|timeline)
 - **links** — typed edges (knows, works_at, invested_in, founded, etc.)
 - **tags** — many-to-many page tagging
 - **timeline_entries** — structured events (date, source, summary, detail)

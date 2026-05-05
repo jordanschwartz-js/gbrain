@@ -348,6 +348,83 @@ describe('runEmbedCore --stale egress fix (SQL-side filter)', () => {
     expect(staleChunkInUpsert.embedding).toBeInstanceOf(Float32Array);
   });
 
+  test('--stale groups same-slug pages by source and preserves code metadata', async () => {
+    const { runEmbedCore } = await import('../src/commands/embed.ts');
+    const stale = [
+      { source_id: 'source-a', slug: 'shared-slug', chunk_index: 0, chunk_text: 'a', chunk_source: 'compiled_truth' as const, model: null, token_count: null },
+      { source_id: 'source-b', slug: 'shared-slug', chunk_index: 0, chunk_text: 'b', chunk_source: 'compiled_truth' as const, model: null, token_count: null },
+    ];
+    const fullChunks = new Map<string, any[]>([
+      ['source-a:shared-slug', [
+        {
+          chunk_index: 0,
+          chunk_text: 'a',
+          chunk_source: 'compiled_truth',
+          embedded_at: null,
+          token_count: 1,
+          language: 'typescript',
+          symbol_name: 'sameName',
+          symbol_type: 'function',
+          start_line: 10,
+          end_line: 12,
+          parent_symbol_path: ['Parent'],
+          doc_comment: 'docs',
+          symbol_name_qualified: 'Parent.sameName',
+        },
+      ]],
+      ['source-b:shared-slug', [
+        {
+          chunk_index: 0,
+          chunk_text: 'b',
+          chunk_source: 'compiled_truth',
+          embedded_at: null,
+          token_count: 1,
+          language: 'typescript',
+          symbol_name: 'sameName',
+          symbol_type: 'function',
+          start_line: 20,
+          end_line: 22,
+          parent_symbol_path: ['OtherParent'],
+          doc_comment: 'other docs',
+          symbol_name_qualified: 'OtherParent.sameName',
+        },
+      ]],
+    ]);
+    const getChunkCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+    const upsertCalls: Array<{ slug: string; chunks: any[]; opts?: { sourceId?: string } }> = [];
+
+    const engine = mockEngine({
+      countStaleChunks: async () => 2,
+      listStaleChunks: async () => stale,
+      getChunks: async (slug: string, opts?: { sourceId?: string }) => {
+        getChunkCalls.push({ slug, opts });
+        return fullChunks.get(`${opts?.sourceId}:${slug}`) || [];
+      },
+      upsertChunks: async (slug: string, chunks: any[], opts?: { sourceId?: string }) => {
+        upsertCalls.push({ slug, chunks, opts });
+      },
+    });
+
+    const result = await runEmbedCore(engine, { stale: true });
+
+    expect(result.embedded).toBe(2);
+    expect(result.pages_processed).toBe(2);
+    expect(totalEmbedCalls).toBe(2);
+    expect(getChunkCalls.map(c => c.opts?.sourceId).sort()).toEqual(['source-a', 'source-b']);
+    expect(upsertCalls.map(c => c.opts?.sourceId).sort()).toEqual(['source-a', 'source-b']);
+
+    const sourceAChunk = upsertCalls.find(c => c.opts?.sourceId === 'source-a')!.chunks[0];
+    expect(sourceAChunk.embedding).toBeInstanceOf(Float32Array);
+    expect(sourceAChunk.language).toBe('typescript');
+    expect(sourceAChunk.symbol_name).toBe('sameName');
+    expect(sourceAChunk.symbol_type).toBe('function');
+    expect(sourceAChunk.start_line).toBe(10);
+    expect(sourceAChunk.end_line).toBe(12);
+    expect(sourceAChunk.parent_symbol_path).toEqual(['Parent']);
+    expect(sourceAChunk.doc_comment).toBe('docs');
+    expect(sourceAChunk.symbol_name_qualified).toBe('Parent.sameName');
+  });
+
   test('--stale dry-run: counts stale via countStaleChunks, reports via listStaleChunks, no embedBatch or upsertChunks', async () => {
     const { runEmbedCore } = await import('../src/commands/embed.ts');
     const stale = [

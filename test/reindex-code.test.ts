@@ -110,4 +110,33 @@ describe('Layer 13 E2 — runReindexCode', () => {
     });
     expect(result.codePages).toBe(3);
   });
+
+  test('--source reimports code pages back into the same source', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, config)
+       VALUES ('scoped-code', 'scoped-code', '{"federated":true}'::jsonb)
+       ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('src-scoped-ts', {
+      source_id: 'scoped-code',
+      type: 'code',
+      page_kind: 'code',
+      title: 'src/scoped.ts (typescript)',
+      compiled_truth: 'export const scoped = 1;\n',
+      timeline: '',
+      frontmatter: { language: 'typescript', file: 'src/scoped.ts' },
+    });
+
+    const result = await runReindexCode(engine, {
+      sourceId: 'scoped-code',
+      noEmbed: true,
+      force: true,
+    });
+    expect(result.codePages).toBe(1);
+
+    const rows = await engine.executeRaw<{ source_id: string }>(
+      `SELECT source_id FROM pages WHERE slug = 'src-scoped-ts' ORDER BY source_id`,
+    );
+    expect(rows.map(r => r.source_id)).toEqual(['scoped-code']);
+  });
 });

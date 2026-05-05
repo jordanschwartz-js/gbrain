@@ -24,6 +24,16 @@ import type {
 import { validateSlug, contentHash, rowToPage, rowToChunk, rowToSearchResult } from './utils.ts';
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause } from './search/sql-ranking.ts';
+import * as gw from './ai/gateway.ts';
+
+function embeddingSqlCast(): 'halfvec' | 'vector' {
+  try {
+    return gw.getEmbeddingDimensions() > 2000 ? 'halfvec' : 'vector';
+  } catch {
+    // Some unit tests exercise engine methods without configuring the AI gateway.
+    return 'vector';
+  }
+}
 
 type PGLiteDB = PGlite;
 
@@ -218,6 +228,9 @@ export class PGLiteEngine implements BrainEngine {
    *   - `content_chunks.symbol_name` column (indexed by `idx_chunks_symbol_name`) — v0.19
    *   - `content_chunks.language` column (indexed by `idx_chunks_language`) — v0.19
    *   - `pages.deleted_at` column (indexed by `pages_deleted_at_purge_idx`) — v0.26.5
+   *   - `subagent_messages.provider_id` column (indexed by `idx_subagent_messages_provider`) — v0.27
+   *   - `subagent_messages.schema_version` and `subagent_tool_executions`
+   *     provider columns (same provider-neutral persistence migration) — v0.27
    *
    * **Maintenance contract:** when a future migration adds a column-with-index
    * or new-table-with-FK referenced by PGLITE_SCHEMA_SQL, extend this method
@@ -245,7 +258,19 @@ export class PGLiteEngine implements BrainEngine {
         EXISTS (SELECT 1 FROM information_schema.columns
                 WHERE table_schema='public' AND table_name='content_chunks' AND column_name='symbol_name') AS symbol_name_exists,
         EXISTS (SELECT 1 FROM information_schema.columns
-                WHERE table_schema='public' AND table_name='content_chunks' AND column_name='language') AS language_exists
+                WHERE table_schema='public' AND table_name='content_chunks' AND column_name='language') AS language_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='subagent_messages') AS subagent_messages_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='subagent_messages' AND column_name='schema_version') AS subagent_messages_schema_version_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='subagent_messages' AND column_name='provider_id') AS subagent_messages_provider_id_exists,
+        EXISTS (SELECT 1 FROM information_schema.tables
+                WHERE table_schema='public' AND table_name='subagent_tool_executions') AS subagent_tool_executions_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='subagent_tool_executions' AND column_name='schema_version') AS subagent_tool_executions_schema_version_exists,
+        EXISTS (SELECT 1 FROM information_schema.columns
+                WHERE table_schema='public' AND table_name='subagent_tool_executions' AND column_name='provider_id') AS subagent_tool_executions_provider_id_exists
     `);
     const probe = rows[0] as {
       pages_exists: boolean;
@@ -257,6 +282,12 @@ export class PGLiteEngine implements BrainEngine {
       chunks_exists: boolean;
       symbol_name_exists: boolean;
       language_exists: boolean;
+      subagent_messages_exists: boolean;
+      subagent_messages_schema_version_exists: boolean;
+      subagent_messages_provider_id_exists: boolean;
+      subagent_tool_executions_exists: boolean;
+      subagent_tool_executions_schema_version_exists: boolean;
+      subagent_tool_executions_provider_id_exists: boolean;
     };
 
     const needsPagesBootstrap = probe.pages_exists && !probe.source_id_exists;
@@ -265,11 +296,20 @@ export class PGLiteEngine implements BrainEngine {
     const needsChunksBootstrap = probe.chunks_exists
       && (!probe.symbol_name_exists || !probe.language_exists);
     const needsPagesDeletedAt = probe.pages_exists && !probe.deleted_at_exists;
+    const needsSubagentMessagesProviderBootstrap = probe.subagent_messages_exists
+      && (!probe.subagent_messages_schema_version_exists || !probe.subagent_messages_provider_id_exists);
+    const needsSubagentToolsProviderBootstrap = probe.subagent_tool_executions_exists
+      && (!probe.subagent_tool_executions_schema_version_exists || !probe.subagent_tool_executions_provider_id_exists);
 
     // Fresh installs (no tables yet) and modern brains both no-op.
-    if (!needsPagesBootstrap && !needsLinksBootstrap && !needsChunksBootstrap && !needsPagesDeletedAt) return;
+    if (!needsPagesBootstrap
+      && !needsLinksBootstrap
+      && !needsChunksBootstrap
+      && !needsPagesDeletedAt
+      && !needsSubagentMessagesProviderBootstrap
+      && !needsSubagentToolsProviderBootstrap) return;
 
-    console.log('  Pre-v0.21 brain detected, applying forward-reference bootstrap');
+    console.log('  Older brain detected, applying forward-reference bootstrap');
 
     if (needsPagesBootstrap) {
       // Mirror schema-embedded.ts shape for `sources` so the subsequent
@@ -325,6 +365,29 @@ export class PGLiteEngine implements BrainEngine {
         ALTER TABLE pages ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
       `);
     }
+
+    if (needsSubagentMessagesProviderBootstrap) {
+      // v36 (subagent_provider_neutral_persistence_v0_27) adds the full
+      // provider-neutral persistence columns. Bootstrap adds enough state for
+      // PGLITE_SCHEMA_SQL's `idx_subagent_messages_provider` index not to
+      // crash; v36 still runs later and is idempotent.
+      await this.db.exec(`
+        ALTER TABLE subagent_messages
+          ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1,
+          ADD COLUMN IF NOT EXISTS provider_id TEXT;
+      `);
+    }
+
+    if (needsSubagentToolsProviderBootstrap) {
+      // Same v36 migration as above. Not currently indexed in PGLITE_SCHEMA_SQL,
+      // but keep both subagent persistence tables at the same compatibility
+      // level before the migration chain continues.
+      await this.db.exec(`
+        ALTER TABLE subagent_tool_executions
+          ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1,
+          ADD COLUMN IF NOT EXISTS provider_id TEXT;
+      `);
+    }
   }
 
   async withReservedConnection<T>(fn: (conn: ReservedConnection) => Promise<T>): Promise<T> {
@@ -363,7 +426,7 @@ export class PGLiteEngine implements BrainEngine {
       where.push('deleted_at IS NULL');
     }
     const { rows } = await this.db.query(
-      `SELECT id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at
+      `SELECT id, source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at, deleted_at
        FROM pages WHERE ${where.join(' AND ')} LIMIT 1`,
       params
     );
@@ -375,6 +438,7 @@ export class PGLiteEngine implements BrainEngine {
     slug = validateSlug(slug);
     const hash = page.content_hash || contentHash(page);
     const frontmatter = page.frontmatter || {};
+    const sourceId = page.source_id || 'default';
 
     // v0.18.0 Step 2: source_id relies on the schema DEFAULT 'default' so
     // existing callers still target the default source without threading
@@ -383,8 +447,8 @@ export class PGLiteEngine implements BrainEngine {
     // surface an explicit sourceId param on putPage for multi-source sync.
     const pageKind = page.page_kind || 'markdown';
     const { rows } = await this.db.query(
-      `INSERT INTO pages (slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, now())
+      `INSERT INTO pages (source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, now())
        ON CONFLICT (source_id, slug) DO UPDATE SET
          type = EXCLUDED.type,
          page_kind = EXCLUDED.page_kind,
@@ -394,14 +458,19 @@ export class PGLiteEngine implements BrainEngine {
          frontmatter = EXCLUDED.frontmatter,
          content_hash = EXCLUDED.content_hash,
          updated_at = now()
-       RETURNING id, slug, type, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at`,
-      [slug, page.type, pageKind, page.title, page.compiled_truth, page.timeline || '', JSON.stringify(frontmatter), hash]
+       RETURNING id, source_id, slug, type, page_kind, title, compiled_truth, timeline, frontmatter, content_hash, created_at, updated_at`,
+      [sourceId, slug, page.type, pageKind, page.title, page.compiled_truth, page.timeline || '', JSON.stringify(frontmatter), hash]
     );
     return rowToPage(rows[0] as Record<string, unknown>);
   }
 
-  async deletePage(slug: string): Promise<void> {
-    await this.db.query('DELETE FROM pages WHERE slug = $1', [slug]);
+  async deletePage(slug: string, opts?: { sourceId?: string }): Promise<void> {
+    const sourceId = opts?.sourceId;
+    await this.db.query(
+      `DELETE FROM pages
+       WHERE slug = $1 ${sourceId ? 'AND source_id = $2' : ''}`,
+      sourceId ? [slug, sourceId] : [slug],
+    );
   }
 
   async softDeletePage(slug: string, opts?: { sourceId?: string }): Promise<{ slug: string } | null> {
@@ -704,12 +773,12 @@ export class PGLiteEngine implements BrainEngine {
          SELECT
            p.slug, p.id as page_id, p.title, p.type, p.source_id, p.updated_at,
            cc.id as chunk_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
-           1 - (cc.embedding <=> $1::vector) AS raw_score
+           1 - (cc.embedding <=> $1::${embeddingSqlCast()}) AS raw_score
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
          JOIN sources s ON s.id = p.source_id
          WHERE cc.embedding IS NOT NULL ${detailFilter}${extraFilter} ${hardExcludeClause} ${visibilityClause}
-         ORDER BY cc.embedding <=> $1::vector
+         ORDER BY cc.embedding <=> $1::${embeddingSqlCast()}
          LIMIT $2
        )
        SELECT
@@ -748,9 +817,12 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   // Chunks
-  async upsertChunks(slug: string, chunks: ChunkInput[]): Promise<void> {
+  async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
+    const sourceId = opts?.sourceId;
     // Get page_id
-    const pageResult = await this.db.query('SELECT id FROM pages WHERE slug = $1', [slug]);
+    const pageResult = sourceId
+      ? await this.db.query('SELECT id FROM pages WHERE slug = $1 AND source_id = $2 LIMIT 1', [slug, sourceId])
+      : await this.db.query('SELECT id FROM pages WHERE slug = $1 LIMIT 1', [slug]);
     if (pageResult.rows.length === 0) throw new Error(`Page not found: ${slug}`);
     const pageId = (pageResult.rows[0] as { id: number }).id;
 
@@ -778,6 +850,7 @@ export class PGLiteEngine implements BrainEngine {
     const rowParts: string[] = [];
     const params: unknown[] = [];
     let paramIdx = 1;
+    const embeddingCast = embeddingSqlCast();
 
     for (const chunk of chunks) {
       const embeddingStr = chunk.embedding
@@ -788,7 +861,7 @@ export class PGLiteEngine implements BrainEngine {
         : null;
 
       if (embeddingStr) {
-        rowParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::vector, $${paramIdx++}, $${paramIdx++}, now(), $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::text[], $${paramIdx++}, $${paramIdx++})`);
+        rowParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::${embeddingCast}, $${paramIdx++}, $${paramIdx++}, now(), $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::text[], $${paramIdx++}, $${paramIdx++})`);
         params.push(
           pageId, chunk.chunk_index, chunk.chunk_text, chunk.chunk_source,
           embeddingStr, chunk.model || 'text-embedding-3-large', chunk.token_count || null,
@@ -835,14 +908,23 @@ export class PGLiteEngine implements BrainEngine {
     );
   }
 
-  async getChunks(slug: string): Promise<Chunk[]> {
-    const { rows } = await this.db.query(
-      `SELECT cc.* FROM content_chunks cc
-       JOIN pages p ON p.id = cc.page_id
-       WHERE p.slug = $1
-       ORDER BY cc.chunk_index`,
-      [slug]
-    );
+  async getChunks(slug: string, opts?: { sourceId?: string }): Promise<Chunk[]> {
+    const sourceId = opts?.sourceId;
+    const { rows } = sourceId
+      ? await this.db.query(
+        `SELECT cc.* FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+         WHERE p.slug = $1 AND p.source_id = $2
+         ORDER BY cc.chunk_index`,
+        [slug, sourceId],
+      )
+      : await this.db.query(
+        `SELECT cc.* FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+         WHERE p.slug = $1
+         ORDER BY cc.chunk_index`,
+        [slug],
+      );
     return (rows as Record<string, unknown>[]).map(r => rowToChunk(r));
   }
 
@@ -858,7 +940,7 @@ export class PGLiteEngine implements BrainEngine {
 
   async listStaleChunks(): Promise<StaleChunkRow[]> {
     const { rows } = await this.db.query(
-      `SELECT p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
+      `SELECT p.source_id, p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
               cc.model, cc.token_count
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
@@ -869,11 +951,16 @@ export class PGLiteEngine implements BrainEngine {
     return rows as unknown as StaleChunkRow[];
   }
 
-  async deleteChunks(slug: string): Promise<void> {
+  async deleteChunks(slug: string, opts?: { sourceId?: string }): Promise<void> {
+    const sourceId = opts?.sourceId;
     await this.db.query(
       `DELETE FROM content_chunks
-       WHERE page_id = (SELECT id FROM pages WHERE slug = $1)`,
-      [slug]
+       WHERE page_id = (
+         SELECT id FROM pages
+         WHERE slug = $1 ${sourceId ? 'AND source_id = $2' : ''}
+         LIMIT 1
+       )`,
+      sourceId ? [slug, sourceId] : [slug]
     );
   }
 
@@ -1214,30 +1301,42 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   // Tags
-  async addTag(slug: string, tag: string): Promise<void> {
+  async addTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void> {
+    const sourceId = opts?.sourceId;
     await this.db.query(
       `INSERT INTO tags (page_id, tag)
-       SELECT id, $2 FROM pages WHERE slug = $1
+       SELECT id, $2 FROM pages
+       WHERE slug = $1 ${sourceId ? 'AND source_id = $3' : ''}
        ON CONFLICT (page_id, tag) DO NOTHING`,
-      [slug, tag]
+      sourceId ? [slug, tag, sourceId] : [slug, tag]
     );
   }
 
-  async removeTag(slug: string, tag: string): Promise<void> {
+  async removeTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void> {
+    const sourceId = opts?.sourceId;
     await this.db.query(
       `DELETE FROM tags
-       WHERE page_id = (SELECT id FROM pages WHERE slug = $1)
+       WHERE page_id = (
+         SELECT id FROM pages
+         WHERE slug = $1 ${sourceId ? 'AND source_id = $3' : ''}
+         LIMIT 1
+       )
          AND tag = $2`,
-      [slug, tag]
+      sourceId ? [slug, tag, sourceId] : [slug, tag]
     );
   }
 
-  async getTags(slug: string): Promise<string[]> {
+  async getTags(slug: string, opts?: { sourceId?: string }): Promise<string[]> {
+    const sourceId = opts?.sourceId;
     const { rows } = await this.db.query(
       `SELECT tag FROM tags
-       WHERE page_id = (SELECT id FROM pages WHERE slug = $1)
+       WHERE page_id = (
+         SELECT id FROM pages
+         WHERE slug = $1 ${sourceId ? 'AND source_id = $2' : ''}
+         LIMIT 1
+       )
        ORDER BY tag`,
-      [slug]
+      sourceId ? [slug, sourceId] : [slug]
     );
     return (rows as { tag: string }[]).map(r => r.tag);
   }
@@ -1386,13 +1485,16 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   // Versions
-  async createVersion(slug: string): Promise<PageVersion> {
+  async createVersion(slug: string, opts?: { sourceId?: string }): Promise<PageVersion> {
+    const sourceId = opts?.sourceId;
     const { rows } = await this.db.query(
       `INSERT INTO page_versions (page_id, compiled_truth, frontmatter)
        SELECT id, compiled_truth, frontmatter
-       FROM pages WHERE slug = $1
+       FROM pages
+       WHERE slug = $1 ${sourceId ? 'AND source_id = $2' : ''}
+       LIMIT 1
        RETURNING *`,
-      [slug]
+      sourceId ? [slug, sourceId] : [slug]
     );
     return rows[0] as unknown as PageVersion;
   }
@@ -1459,19 +1561,27 @@ export class PGLiteEngine implements BrainEngine {
     // most_connected). Both coexist: master's brain_score is the composite
     // dashboard, v0.10.3 metrics give entity-page-level granularity.
     const { rows: [h] } = await this.db.query(`
-      WITH entity_pages AS (
-        SELECT id, slug FROM pages WHERE type IN ('person', 'company')
+      WITH quality_pages AS (
+        SELECT id, slug, updated_at FROM pages
+        WHERE COALESCE(page_kind, 'markdown') <> 'code'
+          AND type <> 'code'
+      ),
+      entity_pages AS (
+        SELECT id, slug FROM pages
+        WHERE type IN ('person', 'company')
+          AND COALESCE(page_kind, 'markdown') <> 'code'
       )
       SELECT
         (SELECT count(*) FROM pages) as page_count,
+        (SELECT count(*) FROM quality_pages) as quality_page_count,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NOT NULL)::float /
           GREATEST((SELECT count(*) FROM content_chunks), 1)::float as embed_coverage,
-        (SELECT count(*) FROM pages p
+        (SELECT count(*) FROM quality_pages p
          WHERE p.updated_at < (SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id)
         ) as stale_pages,
         -- Bug 11 — orphan = islanded (no inbound AND no outbound).
         -- See BrainHealth.orphan_pages docstring; docs updated to match this.
-        (SELECT count(*) FROM pages p
+        (SELECT count(*) FROM quality_pages p
          WHERE NOT EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = p.id)
            AND NOT EXISTS (SELECT 1 FROM links l WHERE l.from_page_id = p.id)
         ) as orphan_pages,
@@ -1480,7 +1590,9 @@ export class PGLiteEngine implements BrainEngine {
         ) as dead_links,
         (SELECT count(*) FROM content_chunks WHERE embedded_at IS NULL) as missing_embeddings,
         (SELECT count(*) FROM links) as link_count,
-        (SELECT count(DISTINCT page_id) FROM timeline_entries) as pages_with_timeline,
+        (SELECT count(DISTINCT te.page_id)
+           FROM timeline_entries te
+           JOIN quality_pages p ON p.id = te.page_id) as pages_with_timeline,
         (SELECT count(*) FROM entity_pages e
          WHERE EXISTS (SELECT 1 FROM links l WHERE l.to_page_id = e.id))::float /
           GREATEST((SELECT count(*) FROM entity_pages), 1)::float as link_coverage,
@@ -1501,23 +1613,25 @@ export class PGLiteEngine implements BrainEngine {
 
     const r = h as Record<string, unknown>;
     const pageCount = Number(r.page_count);
+    const qualityPageCount = Number(r.quality_page_count);
     const embedCoverage = Number(r.embed_coverage);
     const orphanPages = Number(r.orphan_pages);
     const deadLinks = Number(r.dead_links);
     const linkCount = Number(r.link_count);
     const pagesWithTimeline = Number(r.pages_with_timeline);
 
-    const linkDensity = pageCount > 0 ? Math.min(linkCount / pageCount, 1) : 0;
-    const timelineCoverageDensity = pageCount > 0 ? Math.min(pagesWithTimeline / pageCount, 1) : 0;
-    const noOrphans = pageCount > 0 ? 1 - (orphanPages / pageCount) : 1;
-    const noDeadLinks = pageCount > 0 ? 1 - Math.min(deadLinks / pageCount, 1) : 1;
+    const scorePageCount = qualityPageCount;
+    const linkDensity = scorePageCount > 0 ? Math.min(linkCount / scorePageCount, 1) : 0;
+    const timelineCoverageDensity = scorePageCount > 0 ? Math.min(pagesWithTimeline / scorePageCount, 1) : 0;
+    const noOrphans = scorePageCount > 0 ? 1 - (orphanPages / scorePageCount) : 1;
+    const noDeadLinks = scorePageCount > 0 ? 1 - Math.min(deadLinks / scorePageCount, 1) : 1;
     // Bug 11 — per-component points. Sum equals brainScore by construction
     // so `doctor` can render a breakdown that adds up to the total.
     const embedCoverageScore = pageCount === 0 ? 0 : Math.round(embedCoverage * 35);
-    const linkDensityScore = pageCount === 0 ? 0 : Math.round(linkDensity * 25);
-    const timelineCoverageScore = pageCount === 0 ? 0 : Math.round(timelineCoverageDensity * 15);
-    const noOrphansScore = pageCount === 0 ? 0 : Math.round(noOrphans * 15);
-    const noDeadLinksScore = pageCount === 0 ? 0 : Math.round(noDeadLinks * 10);
+    const linkDensityScore = scorePageCount === 0 ? 0 : Math.round(linkDensity * 25);
+    const timelineCoverageScore = scorePageCount === 0 ? 0 : Math.round(timelineCoverageDensity * 15);
+    const noOrphansScore = scorePageCount === 0 ? 0 : Math.round(noOrphans * 15);
+    const noDeadLinksScore = scorePageCount === 0 ? 0 : Math.round(noDeadLinks * 10);
     const brainScore = embedCoverageScore + linkDensityScore + timelineCoverageScore + noOrphansScore + noDeadLinksScore;
 
     return {
@@ -1561,11 +1675,14 @@ export class PGLiteEngine implements BrainEngine {
   }
 
   // Sync
-  async updateSlug(oldSlug: string, newSlug: string): Promise<void> {
+  async updateSlug(oldSlug: string, newSlug: string, opts?: { sourceId?: string }): Promise<void> {
     newSlug = validateSlug(newSlug);
+    const sourceId = opts?.sourceId;
     await this.db.query(
-      `UPDATE pages SET slug = $1, updated_at = now() WHERE slug = $2`,
-      [newSlug, oldSlug]
+      `UPDATE pages
+       SET slug = $1, updated_at = now()
+       WHERE slug = $2 ${sourceId ? 'AND source_id = $3' : ''}`,
+      sourceId ? [newSlug, oldSlug, sourceId] : [newSlug, oldSlug]
     );
   }
 

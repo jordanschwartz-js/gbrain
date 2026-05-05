@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { isSyncable, isCodeFilePath, slugifyCodePath, pathToSlug } from '../src/core/sync.ts';
+import { isSyncable, isCodeFilePath, parseSyncStrategy, slugifyCodePath, pathToSlug } from '../src/core/sync.ts';
 
 describe('isCodeFilePath', () => {
   test('recognizes common code extensions', () => {
@@ -33,6 +33,12 @@ describe('isCodeFilePath', () => {
 });
 
 describe('isSyncable with strategy', () => {
+  test('parseSyncStrategy rejects typos instead of treating them like auto', () => {
+    expect(parseSyncStrategy(undefined)).toBe('markdown');
+    expect(parseSyncStrategy('code')).toBe('code');
+    expect(() => parseSyncStrategy('cod')).toThrow(/Invalid sync strategy/);
+  });
+
   test('default strategy (markdown) behaves as before — only .md/.mdx', () => {
     expect(isSyncable('people/alice.md')).toBe(true);
     expect(isSyncable('docs/guide.mdx')).toBe(true);

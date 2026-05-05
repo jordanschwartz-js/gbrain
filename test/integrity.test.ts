@@ -201,6 +201,14 @@ describe('scanIntegrity', () => {
       timeline: '',
       frontmatter: { validate: false },
     });
+    await engine.putPage('src-integrity-fixture-ts', {
+      type: 'code',
+      page_kind: 'code',
+      title: 'src/integrity-fixture.ts',
+      compiled_truth: 'const sample = "Code fixture tweeted about implementation details."; // [docs](https://example.com/code)\n',
+      timeline: '',
+      frontmatter: { file: 'src/integrity-fixture.ts', language: 'typescript' },
+    });
   }, 60_000);
 
   afterAll(async () => {
@@ -221,6 +229,16 @@ describe('scanIntegrity', () => {
     const res = await scanIntegrity(engine);
     const slugs = res.bareHits.map(h => h.slug);
     expect(slugs).not.toContain('people/legacy');
+  });
+
+  test('skips code-index pages unless explicitly requested', async () => {
+    const res = await scanIntegrity(engine);
+    expect(res.bareHits.map(h => h.slug)).not.toContain('src-integrity-fixture-ts');
+    expect(res.externalHits.map(h => h.slug)).not.toContain('src-integrity-fixture-ts');
+
+    const withCode = await scanIntegrity(engine, { includeCode: true });
+    expect(withCode.bareHits.map(h => h.slug)).toContain('src-integrity-fixture-ts');
+    expect(withCode.externalHits.map(h => h.slug)).toContain('src-integrity-fixture-ts');
   });
 
   test('honors limit', async () => {

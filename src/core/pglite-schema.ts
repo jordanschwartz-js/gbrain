@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   chunk_index   INTEGER NOT NULL,
   chunk_text    TEXT    NOT NULL,
   chunk_source  TEXT    NOT NULL DEFAULT 'compiled_truth',
-  embedding     vector(__EMBEDDING_DIMS__),
+  embedding     __EMBEDDING_TYPE__,
   model         TEXT    NOT NULL DEFAULT '__EMBEDDING_MODEL__',
   token_count   INTEGER,
   embedded_at   TIMESTAMPTZ,
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_page ON content_chunks(page_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding __EMBEDDING_OPS__);
 -- v0.19.0: partial indexes for code chunk lookups.
 CREATE INDEX IF NOT EXISTS idx_chunks_symbol_name ON content_chunks(symbol_name) WHERE symbol_name IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_chunks_language ON content_chunks(language) WHERE language IS NOT NULL;
@@ -532,7 +532,12 @@ DROP FUNCTION IF EXISTS update_page_search_vector_from_timeline();
  * Defaults preserve v0.13 behavior (1536d + text-embedding-3-large).
  */
 export function getPGLiteSchema(dims: number = 1536, model: string = 'text-embedding-3-large'): string {
+  const embeddingType = dims > 2000 ? `halfvec(${dims})` : `vector(${dims})`;
+  const embeddingOps = dims > 2000 ? 'halfvec_cosine_ops' : 'vector_cosine_ops';
+
   return PGLITE_SCHEMA_SQL_TEMPLATE
+    .replace(/__EMBEDDING_TYPE__/g, embeddingType)
+    .replace(/__EMBEDDING_OPS__/g, embeddingOps)
     .replace(/__EMBEDDING_DIMS__/g, String(dims))
     .replace(/__EMBEDDING_MODEL__/g, model);
 }

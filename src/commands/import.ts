@@ -4,6 +4,7 @@ import { join, relative } from 'path';
 import { cpus, totalmem } from 'os';
 import type { BrainEngine } from '../core/engine.ts';
 import { importFile } from '../core/import-file.ts';
+import { isSyncable, parseSyncStrategy, type SyncStrategy } from '../core/sync.ts';
 import { loadConfig, gbrainPath } from '../core/config.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
@@ -34,6 +35,16 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
   const jsonOutput = args.includes('--json');
   const workersIdx = args.indexOf('--workers');
   const workersArg = workersIdx !== -1 ? args[workersIdx + 1] : null;
+  const sourceIdx = args.indexOf('--source');
+  const sourceId = sourceIdx !== -1 ? args[sourceIdx + 1] : undefined;
+  const strategyIdx = args.indexOf('--strategy');
+  let strategy: SyncStrategy;
+  try {
+    strategy = parseSyncStrategy(strategyIdx !== -1 ? args[strategyIdx + 1] : undefined);
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(2);
+  }
   // v0.22.13 (PR #490 Q2): shared parseWorkers helper rejects bad input
   // (--workers 0, -3, "foo") with a loud error instead of silently falling
   // through to 1. Mirrors sync.ts's flag handling.
@@ -48,17 +59,19 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
   // Find dir: first non-flag arg that isn't a value for --workers
   const flagValues = new Set<number>();
   if (workersIdx !== -1) flagValues.add(workersIdx + 1);
+  if (sourceIdx !== -1) flagValues.add(sourceIdx + 1);
+  if (strategyIdx !== -1) flagValues.add(strategyIdx + 1);
   const dirArg = args.find((a, i) => !a.startsWith('--') && !flagValues.has(i));
 
   if (!dirArg) {
-    console.error('Usage: gbrain import <dir> [--no-embed] [--workers N] [--fresh] [--json]');
+    console.error('Usage: gbrain import <dir> [--source ID] [--strategy markdown|code|auto] [--no-embed] [--workers N] [--fresh] [--json]');
     process.exit(1);
   }
   const dir: string = dirArg;  // narrowed; survives closure capture
 
-  // Collect all .md files
-  const allFiles = collectMarkdownFiles(dir);
-  console.log(`Found ${allFiles.length} markdown files`);
+  // Collect files matching the requested sync strategy.
+  const allFiles = collectSyncableFiles(dir, strategy);
+  console.log(`Found ${allFiles.length} ${strategy === 'markdown' ? 'markdown' : 'syncable'} files`);
 
   // Resume from checkpoint if available
   const checkpointPath = gbrainPath('import-checkpoint.json');
@@ -105,7 +118,7 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
   async function processFile(eng: BrainEngine, filePath: string) {
     const relativePath = relative(dir, filePath);
     try {
-      const result = await importFile(eng, filePath, relativePath, { noEmbed });
+      const result = await importFile(eng, filePath, relativePath, { noEmbed, sourceId });
       if (result.status === 'imported') {
         imported++;
         chunksCreated += result.chunks;
@@ -286,6 +299,10 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
 }
 
 export function collectMarkdownFiles(dir: string): string[] {
+  return collectSyncableFiles(dir, 'markdown');
+}
+
+export function collectSyncableFiles(dir: string, strategy: SyncStrategy = 'markdown'): string[] {
   const files: string[] = [];
 
   function walk(d: string) {
@@ -322,7 +339,7 @@ export function collectMarkdownFiles(dir: string): string[] {
 
       if (stat.isDirectory()) {
         walk(full);
-      } else if (entry.endsWith('.md') || entry.endsWith('.mdx')) {
+      } else if (isSyncable(full.slice(dir.length + 1), { strategy })) {
         files.push(full);
       }
     }

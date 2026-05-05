@@ -2,6 +2,7 @@ import { describe, test, expect, afterEach } from 'bun:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { withEnv } from './helpers/with-env.ts';
 import {
   loadMounts,
   validateMountId,
@@ -266,16 +267,19 @@ describe('BrainRegistry — lazy init', () => {
   });
 
   test('empty/null/undefined id routes to host', async () => {
-    // We can't actually call getBrain('') without a host config, so we just
-    // verify the routing logic by observing the default-branch path. This
-    // test proves the fall-through to HOST_BRAIN_ID happens before any
-    // lookup, not that host init actually succeeds.
-    const reg = new BrainRegistry([]);
-    // Expect the host-init path to be attempted (it'll fail on missing
-    // ~/.gbrain/config.json in test env, but the error will come from
-    // initHostBrain, not UnknownBrainError — proving routing hit host).
-    await expect(reg.getBrain(null)).rejects.not.toBeInstanceOf(UnknownBrainError);
-    await expect(reg.getBrain(undefined)).rejects.not.toBeInstanceOf(UnknownBrainError);
-    await expect(reg.getBrain('')).rejects.not.toBeInstanceOf(UnknownBrainError);
+    const home = mkdtempSync(join(tmpdir(), 'brain-registry-host-'));
+    toCleanup.push(home);
+    await withEnv({ GBRAIN_HOME: home, GBRAIN_DATABASE_URL: undefined, DATABASE_URL: undefined }, async () => {
+      // Verify the routing logic by observing the default-branch path. This
+      // test proves the fall-through to HOST_BRAIN_ID happens before any
+      // lookup, not that host init actually succeeds.
+      const reg = new BrainRegistry([]);
+      // Expect the host-init path to be attempted (it'll fail on missing
+      // config in this isolated test env, but the error will come from
+      // initHostBrain, not UnknownBrainError — proving routing hit host).
+      await expect(reg.getBrain(null)).rejects.not.toBeInstanceOf(UnknownBrainError);
+      await expect(reg.getBrain(undefined)).rejects.not.toBeInstanceOf(UnknownBrainError);
+      await expect(reg.getBrain('')).rejects.not.toBeInstanceOf(UnknownBrainError);
+    });
   });
 });

@@ -153,6 +153,17 @@ async function initMigrateOnly(opts: { jsonOutput: boolean }) {
     process.exit(1);
   }
 
+  const { configureGateway } = await import('../core/ai/gateway.ts');
+  configureGateway({
+    embedding_model: config.embedding_model,
+    embedding_dimensions: config.embedding_dimensions,
+    expansion_model: config.expansion_model,
+    chat_model: config.chat_model,
+    chat_fallback_chain: config.chat_fallback_chain,
+    base_urls: config.provider_base_urls,
+    env: { ...process.env },
+  });
+
   const engine = await createEngine(toEngineConfig(config));
   try {
     await engine.connect(toEngineConfig(config));

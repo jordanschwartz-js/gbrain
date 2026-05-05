@@ -7,6 +7,7 @@ import { createInterface } from 'readline';
 import {
   buildSyncManifest,
   isSyncable,
+  parseSyncStrategy,
   resolveSlugForPath,
   recordSyncFailures,
   unacknowledgedSyncFailures,
@@ -28,6 +29,7 @@ import {
 import { tryAcquireDbLock, SYNC_LOCK_ID } from '../core/db-lock.ts';
 import { loadStorageConfig } from '../core/storage-config.ts';
 import { getDefaultSourcePath } from '../core/source-resolver.ts';
+import { markSourceStrategy } from '../core/source-config.ts';
 
 export interface SyncResult {
   status: 'up_to_date' | 'synced' | 'first_sync' | 'dry_run' | 'blocked_by_failures';
@@ -432,9 +434,9 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   for (const path of unsyncableModified) {
     const slug = resolveSlugForPath(path);
     try {
-      const existing = await engine.getPage(slug);
+      const existing = await engine.getPage(slug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
       if (existing) {
-        await engine.deletePage(slug);
+        await engine.deletePage(slug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
         console.log(`  Deleted un-syncable page: ${slug}`);
       }
     } catch { /* ignore */ }
@@ -500,7 +502,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     progress.start('sync.deletes', filtered.deleted.length);
     for (const path of filtered.deleted) {
       const slug = resolveSlugForPath(path);
-      await engine.deletePage(slug);
+      await engine.deletePage(slug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
       pagesAffected.push(slug);
       progress.tick(1, slug);
     }
@@ -517,14 +519,14 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       const oldSlug = resolveSlugForPath(from);
       const newSlug = resolveSlugForPath(to);
       try {
-        await engine.updateSlug(oldSlug, newSlug);
+        await engine.updateSlug(oldSlug, newSlug, opts.sourceId ? { sourceId: opts.sourceId } : undefined);
       } catch {
         // Slug doesn't exist or collision, treat as add
       }
       // Reimport at new path (picks up content changes)
       const filePath = join(repoPath, to);
       if (existsSync(filePath)) {
-        const result = await importFile(engine, filePath, to, { noEmbed });
+        const result = await importFile(engine, filePath, to, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') chunksCreated += result.chunks;
       }
       pagesAffected.push(newSlug);
@@ -579,7 +581,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
         return;
       }
       try {
-        const result = await importFile(eng, filePath, path, { noEmbed });
+        const result = await importFile(eng, filePath, path, { noEmbed, sourceId: opts.sourceId });
         if (result.status === 'imported') {
           chunksCreated += result.chunks;
           pagesAffected.push(result.slug);
@@ -761,7 +763,7 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     } catch { /* extraction is best-effort */ }
   }
 
-  // Auto-embed (skip for large syncs — embedding calls OpenAI)
+  // Auto-embed (skip for large syncs — embedding calls the configured provider)
   let embedded = 0;
   if (!noEmbed && pagesAffected.length > 0 && pagesAffected.length <= 100) {
     try {
@@ -800,11 +802,11 @@ async function performFullSync(
   // Fixes the silent-write-on-dry-run bug where performFullSync called
   // runImport unconditionally regardless of opts.dryRun.
   if (opts.dryRun) {
-    const { collectMarkdownFiles } = await import('./import.ts');
-    const allFiles = collectMarkdownFiles(repoPath);
+    const { collectSyncableFiles } = await import('./import.ts');
+    const allFiles = collectSyncableFiles(repoPath, opts.strategy ?? 'markdown');
     const syncableRelPaths = allFiles
       .map(abs => relative(repoPath, abs))
-      .filter(rel => isSyncable(rel));
+      .filter(rel => isSyncable(rel, opts.strategy ? { strategy: opts.strategy } : undefined));
     console.log(
       `Full-sync dry run: ${syncableRelPaths.length} file(s) would be imported ` +
       `from ${repoPath} @ ${headCommit.slice(0, 8)}.`,
@@ -834,6 +836,8 @@ async function performFullSync(
   const { runImport } = await import('./import.ts');
   const importArgs = [repoPath];
   if (opts.noEmbed) importArgs.push('--no-embed');
+  if (opts.sourceId) importArgs.push('--source', opts.sourceId);
+  if (opts.strategy) importArgs.push('--strategy', opts.strategy);
   if (fullConcurrency > 1) importArgs.push('--workers', String(fullConcurrency));
   const result = await runImport(engine, importArgs, { commit: headCommit });
 
@@ -921,7 +925,14 @@ export async function runSync(engine: BrainEngine, args: string[]) {
   const syncAll = args.includes('--all');
   const jsonOut = args.includes('--json');
   const yesFlag = args.includes('--yes');
-  const strategyArg = args.find((a, i) => args[i - 1] === '--strategy') as SyncOpts['strategy'] | undefined;
+  const rawStrategyArg = args.find((a, i) => args[i - 1] === '--strategy');
+  let strategyArg: SyncOpts['strategy'] | undefined;
+  try {
+    strategyArg = rawStrategyArg ? parseSyncStrategy(rawStrategyArg) : undefined;
+  } catch (e) {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(2);
+  }
   const concurrencyStr = args.find((a, i) => args[i - 1] === '--concurrency' || args[i - 1] === '--workers');
   // v0.22.13 (PR #490 Q2): parseWorkers throws on '0', '-3', 'foo', '1.5' instead
   // of silently falling through to auto-concurrency or NaN. Loud failure beats
@@ -942,6 +953,9 @@ export async function runSync(engine: BrainEngine, args: string[]) {
   if (explicitSource || process.env.GBRAIN_SOURCE) {
     const { resolveSourceId } = await import('../core/source-resolver.ts');
     sourceId = await resolveSourceId(engine, explicitSource);
+  }
+  if (!dryRun && sourceId && (strategyArg === 'markdown' || strategyArg === 'code' || strategyArg === 'auto')) {
+    await markSourceStrategy(engine, sourceId, strategyArg);
   }
 
   // v0.19.0 — `sync --all` iterates all registered sources with a

@@ -117,9 +117,9 @@ Pair them with manual inspection of the top regressions.
 
 ## Cost
 
-Every `query` row in the snapshot embeds the query string via OpenAI to run
-the vector half of `hybridSearch`. Cost is identical to a normal `gbrain
-query` invocation — text-embedding-3-large at OpenAI list price, batched
+Every `query` row in the snapshot embeds the query string via the configured
+embedding provider to run the vector half of `hybridSearch`. Cost is identical
+to a normal `gbrain query` invocation for that provider and model, batched
 inside a single replay row.
 
 If you're iterating locally and don't want to pay per change, use

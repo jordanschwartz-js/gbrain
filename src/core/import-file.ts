@@ -179,13 +179,13 @@ const MAX_FILE_SIZE = 5_000_000; // 5MB
  * importFromFile already enforces this against disk size before calling here, but
  * the remote MCP put_page operation passes caller-supplied content straight in,
  * so the guard has to live on this function — otherwise an authenticated caller
- * can spend the owner's OpenAI budget at will by shipping a megabyte-sized page.
+ * can spend the owner's embedding-provider budget at will by shipping a megabyte-sized page.
  */
 export async function importFromContent(
   engine: BrainEngine,
   slug: string,
   content: string,
-  opts: { noEmbed?: boolean } = {},
+  opts: { noEmbed?: boolean; sourceId?: string } = {},
 ): Promise<ImportResult> {
   // Reject oversized payloads before any parsing, chunking, or embedding happens.
   // Uses Buffer.byteLength to count UTF-8 bytes the same way disk size would,
@@ -223,7 +223,8 @@ export async function importFromContent(
     tags: parsed.tags,
   };
 
-  const existing = await engine.getPage(slug);
+  const sourceOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+  const existing = await engine.getPage(slug, sourceOpts);
   if (existing?.content_hash === hash) {
     return { slug, status: 'skipped', chunks: 0, parsedPage };
   }
@@ -261,7 +262,7 @@ export async function importFromContent(
 
   // Transaction wraps all DB writes
   await engine.transaction(async (tx) => {
-    if (existing) await tx.createVersion(slug);
+    if (existing) await tx.createVersion(slug, sourceOpts);
 
     await tx.putPage(slug, {
       type: parsed.type,
@@ -270,23 +271,24 @@ export async function importFromContent(
       timeline: parsed.timeline || '',
       frontmatter: parsed.frontmatter,
       content_hash: hash,
+      source_id: opts.sourceId,
     });
 
     // Tag reconciliation: remove stale, add current
-    const existingTags = await tx.getTags(slug);
+    const existingTags = await tx.getTags(slug, sourceOpts);
     const newTags = new Set(parsed.tags);
     for (const old of existingTags) {
-      if (!newTags.has(old)) await tx.removeTag(slug, old);
+      if (!newTags.has(old)) await tx.removeTag(slug, old, sourceOpts);
     }
     for (const tag of parsed.tags) {
-      await tx.addTag(slug, tag);
+      await tx.addTag(slug, tag, sourceOpts);
     }
 
     if (chunks.length > 0) {
-      await tx.upsertChunks(slug, chunks);
+      await tx.upsertChunks(slug, chunks, sourceOpts);
     } else {
       // Content is empty — delete stale chunks so they don't ghost in search results
-      await tx.deleteChunks(slug);
+      await tx.deleteChunks(slug, sourceOpts);
     }
 
     // v0.19.0 E1 — doc↔impl linking: if this markdown page cites code paths
@@ -333,7 +335,7 @@ export async function importFromFile(
   engine: BrainEngine,
   filePath: string,
   relativePath: string,
-  opts: { noEmbed?: boolean; inferFrontmatter?: boolean } = {},
+  opts: { noEmbed?: boolean; inferFrontmatter?: boolean; sourceId?: string } = {},
 ): Promise<ImportResult> {
   // Defense-in-depth: reject symlinks before reading content.
   const lstat = lstatSync(filePath);
@@ -398,7 +400,7 @@ export async function importCodeFile(
   engine: BrainEngine,
   relativePath: string,
   content: string,
-  opts: { noEmbed?: boolean; force?: boolean } = {},
+  opts: { noEmbed?: boolean; force?: boolean; sourceId?: string } = {},
 ): Promise<ImportResult> {
   const slug = slugifyCodePath(relativePath);
   const lang = detectCodeLanguage(relativePath) || 'unknown';
@@ -415,7 +417,8 @@ export async function importCodeFile(
     .update(JSON.stringify({ title, type: 'code', content, lang, chunker_version: CHUNKER_VERSION }))
     .digest('hex');
 
-  const existing = await engine.getPage(slug);
+  const sourceOpts = opts.sourceId ? { sourceId: opts.sourceId } : undefined;
+  const existing = await engine.getPage(slug, sourceOpts);
   if (!opts.force && existing?.content_hash === hash) {
     return { slug, status: 'skipped', chunks: 0 };
   }
@@ -450,10 +453,10 @@ export async function importCodeFile(
   // improving retrieval. Look up existing chunks by slug and, for any
   // whose chunk_text exactly matches the new chunk at the same index,
   // reuse the existing embedding. Only truly new/changed chunks hit the
-  // OpenAI API. Order matters: our chunk_index is semantic (tree-sitter
+  // configured embedding provider. Order matters: our chunk_index is semantic (tree-sitter
   // order), so a matching (chunk_index, text_hash) means a verbatim
   // preserved symbol.
-  const existingChunks = existing ? await engine.getChunks(slug) : [];
+  const existingChunks = existing ? await engine.getChunks(slug, sourceOpts) : [];
   const existingByKey = new Map<string, typeof existingChunks[number]>();
   for (const ec of existingChunks) {
     existingByKey.set(`${ec.chunk_index}:${ec.chunk_text}`, ec);
@@ -488,7 +491,7 @@ export async function importCodeFile(
 
   // Store
   await engine.transaction(async (tx) => {
-    if (existing) await tx.createVersion(slug);
+    if (existing) await tx.createVersion(slug, sourceOpts);
 
     await tx.putPage(slug, {
       type: 'code' as PageType,
@@ -498,15 +501,16 @@ export async function importCodeFile(
       timeline: '',
       frontmatter: { language: lang, file: relativePath },
       content_hash: hash,
+      source_id: opts.sourceId,
     });
 
-    await tx.addTag(slug, 'code');
-    await tx.addTag(slug, lang);
+    await tx.addTag(slug, 'code', sourceOpts);
+    await tx.addTag(slug, lang, sourceOpts);
 
     if (chunks.length > 0) {
-      await tx.upsertChunks(slug, chunks);
+      await tx.upsertChunks(slug, chunks, sourceOpts);
     } else {
-      await tx.deleteChunks(slug);
+      await tx.deleteChunks(slug, sourceOpts);
     }
   });
 
@@ -517,7 +521,7 @@ export async function importCodeFile(
   // chunk IDs are stable.
   if (extractedEdges.length > 0 && chunks.length > 0) {
     try {
-      const persistedChunks = await engine.getChunks(slug);
+      const persistedChunks = await engine.getChunks(slug, sourceOpts);
       const byIndex = new Map<number, { id?: number; symbol_name_qualified?: string | null; start_line?: number | null; end_line?: number | null }>();
       for (const pc of persistedChunks) {
         byIndex.set(pc.chunk_index, pc);
@@ -555,6 +559,7 @@ export async function importCodeFile(
           from_symbol_qualified: from.symbol_name_qualified,
           to_symbol_qualified: e.toSymbol,
           edge_type: e.edgeType,
+          source_id: opts.sourceId ?? null,
         });
       }
 

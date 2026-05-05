@@ -229,10 +229,11 @@ async function cmdCheck(args: string[]): Promise<void> {
   const jsonMode = args.includes('--json');
   const limit = extractIntFlag(args, '--limit') ?? Infinity;
   const typeFilter = extractFlag(args, '--type');
+  const includeCode = args.includes('--include-code');
 
   const engine = await connect();
   try {
-    const res = await scanIntegrity(engine, { limit, typeFilter });
+    const res = await scanIntegrity(engine, { limit, typeFilter, includeCode });
 
     if (jsonMode) {
       console.log(JSON.stringify({
@@ -266,6 +267,8 @@ export interface IntegrityScanOptions {
   limit?: number;
   /** Slug prefix filter (e.g. "people") — matches slugs starting with `${typeFilter}/`. */
   typeFilter?: string;
+  /** Include code-index pages. Default false: integrity is a markdown-brain check. */
+  includeCode?: boolean;
   /**
    * When true (default), batch-load pages via a single SQL query instead of
    * sequential getPage() calls. Falls back to sequential on error (e.g. PGLite).
@@ -293,7 +296,7 @@ export async function scanIntegrity(
   engine: BrainEngine,
   opts: IntegrityScanOptions = {},
 ): Promise<IntegrityScanResult> {
-  const { limit = Infinity, typeFilter, batchLoad = true } = opts;
+  const { limit = Infinity, typeFilter, batchLoad = true, includeCode = false } = opts;
 
   // Fast path: single SQL query instead of N sequential getPage() calls.
   // Eliminates ~500 round-trips through PgBouncer that caused doctor to
@@ -302,7 +305,7 @@ export async function scanIntegrity(
   // log clean for real Postgres errors instead of expected PGLite skips.
   if (batchLoad && limit !== Infinity && engine.kind === 'postgres') {
     try {
-      return await scanIntegrityBatch(limit, typeFilter);
+      return await scanIntegrityBatch(limit, typeFilter, includeCode);
     } catch (err) {
       // GBRAIN_DEBUG=1 surfaces real Postgres errors (deadlock, connection
       // drop, SQL bug) that would otherwise vanish into the sequential
@@ -327,6 +330,7 @@ export async function scanIntegrity(
     if (pagesScanned >= limit) break;
     const page = await engine.getPage(slug);
     if (!page) continue;
+    if (!includeCode && (page.type === 'code' || page.page_kind === 'code')) continue;
     // Skip grandfathered pages (opted out of brain-integrity enforcement)
     if ((page.frontmatter as Record<string, unknown> | undefined)?.validate === false) continue;
     pagesScanned++;
@@ -351,13 +355,16 @@ export async function scanIntegrity(
 async function scanIntegrityBatch(
   limit: number,
   typeFilter?: string,
+  includeCode = false,
 ): Promise<IntegrityScanResult> {
   const sql = db.getConnection();
   const typeCondition = typeFilter ? sql`AND slug LIKE ${typeFilter + '/%'}` : sql``;
+  const codeCondition = includeCode ? sql`` : sql`AND COALESCE(page_kind, 'markdown') <> 'code' AND type <> 'code'`;
   // Boolean validate is the documented contract; stringly-typed 'false' (quoted
   // YAML) diverges from the sequential path's strict === false check. Intentional
   // — gbrain lint should reject stringly-typed validate at write time.
   const validateCondition = sql`AND (frontmatter->>'validate' IS NULL OR frontmatter->>'validate' != 'false')`;
+  const activeCondition = sql`AND deleted_at IS NULL`;
 
   // DISTINCT ON (slug) mirrors getAllSlugs()'s Set<string> semantics: multi-source
   // brains can have the same slug under multiple source_ids (UNIQUE(source_id, slug)
@@ -365,7 +372,7 @@ async function scanIntegrityBatch(
   const rows = await sql`
     SELECT DISTINCT ON (slug) slug, compiled_truth, frontmatter
     FROM pages
-    WHERE 1=1 ${typeCondition} ${validateCondition}
+    WHERE 1=1 ${typeCondition} ${codeCondition} ${validateCondition} ${activeCondition}
     ORDER BY slug
     LIMIT ${limit}
   `;
@@ -740,6 +747,7 @@ Subcommands:
   check                         Read-only report (pages scanned, bare tweets found)
   check --type people           Scope to people/ pages
   check --limit N --json        JSON output for N pages
+  check --include-code          Include code-index pages in the scan
 
   auto [options]                Three-bucket repair loop
     --confidence 0.8            Auto-repair threshold (default 0.8)
