@@ -12,7 +12,14 @@ mock.module('../src/core/embedding.ts', () => ({
   EMBEDDING_MODEL: 'qwen3-embedding:4b',
   EMBEDDING_DIMENSIONS: 2560,
   configureEmbeddingFromEngine: async () => {},
+  getEmbeddingConfig: () => ({
+    provider: 'ollama',
+    model: 'qwen3-embedding:4b',
+    dimensions: 2560,
+    ollamaEmbedUrl: 'http://127.0.0.1:11434/api/embed',
+  }),
   getEmbeddingModel: () => 'qwen3-embedding:4b',
+  embed: async () => new Float32Array(2560),
   embedBatch: async (texts: string[]) => {
     activeEmbedCalls++;
     totalEmbedCalls++;

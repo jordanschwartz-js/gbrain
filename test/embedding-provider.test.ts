@@ -129,4 +129,61 @@ describe('embedding provider', () => {
     expect(getEmbeddingModel()).toBe('qwen3-embedding:4b');
     expect(embeddings[0].length).toBe(2560);
   });
+
+  test('hybrid query uses Ollama vector search without an OpenAI key', async () => {
+    delete process.env.OPENAI_API_KEY;
+
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      embeddings: [new Array(2560).fill(0.1)],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as unknown as typeof fetch;
+
+    let vectorCalls = 0;
+    const engine = {
+      getConfig: async (key: string) => ({
+        embedding_provider: 'ollama',
+        embedding_model: 'qwen3-embedding:4b',
+        embedding_dimensions: '2560',
+        ollama_embed_url: 'http://ollama.test/api/embed',
+      } as Record<string, string>)[key] ?? null,
+      searchKeyword: async () => [{
+        slug: 'keyword',
+        page_id: 1,
+        title: 'Keyword',
+        type: 'concept',
+        chunk_text: 'keyword result',
+        chunk_source: 'compiled_truth',
+        chunk_id: 1,
+        chunk_index: 0,
+        score: 0.5,
+        stale: false,
+      }],
+      searchVector: async () => {
+        vectorCalls++;
+        return [{
+          slug: 'vector',
+          page_id: 2,
+          title: 'Vector',
+          type: 'concept',
+          chunk_text: 'vector result',
+          chunk_source: 'compiled_truth',
+          chunk_id: 2,
+          chunk_index: 0,
+          score: 0.9,
+          stale: false,
+        }];
+      },
+      getEmbeddingsByChunkIds: async () => new Map([[2, new Float32Array(2560).fill(0.1)]]),
+      getBacklinkCounts: async () => new Map(),
+    };
+
+    const modulePath = `../src/core/search/hybrid.ts?ollama-query-test=${Date.now()}`;
+    const { hybridSearch } = await import(modulePath);
+    const results = await hybridSearch(engine as any, 'semantic query', { limit: 5 });
+
+    expect(vectorCalls).toBe(1);
+    expect(results.some((r: { slug: string }) => r.slug === 'vector')).toBe(true);
+  });
 });
