@@ -111,8 +111,10 @@ gbrain stats
 gbrain embed --stale
 ```
 
-If `OPENAI_API_KEY` is not set, embeddings can't be generated. Keyword search
-still works without embeddings, but hybrid/semantic search won't.
+If the configured provider is OpenAI, `OPENAI_API_KEY` must be set. If the
+configured provider is Ollama, Ollama must be running and the configured model
+must be available. Keyword search still works without embeddings, but
+hybrid/semantic search won't.
 
 ### 4c. End-to-End Test
 
@@ -156,13 +158,26 @@ gbrain stats
 
 **Expected:** Embedded chunk count matches (or is close to) total chunk count.
 
-**If zero or very low:** `OPENAI_API_KEY` may be missing or invalid. Check:
+**If zero or very low:** Check which embedding provider is configured:
+
+```bash
+gbrain config get embedding_provider
+```
+
+For OpenAI, verify the key is set:
 
 ```bash
 echo $OPENAI_API_KEY | head -c 10
 ```
 
-If blank, set the key. Then:
+For Ollama, verify the configured model is available:
+
+```bash
+gbrain config get embedding_model
+ollama list
+```
+
+Then:
 
 ```bash
 gbrain embed --stale

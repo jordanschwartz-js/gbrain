@@ -33,15 +33,26 @@ restart the shell or add the PATH export to the shell profile.
 
 ## Step 2: API Keys
 
-Ask the user for these:
+Choose an embedding provider, then ask only for the credentials that provider
+needs:
 
 ```bash
-export OPENAI_API_KEY=sk-...          # required for vector search
+export OPENAI_API_KEY=sk-...          # required only for OpenAI embeddings
 export ANTHROPIC_API_KEY=sk-ant-...   # optional, improves search quality
 ```
 
-Save to shell profile or `.env`. Without OpenAI, keyword search still works.
-Without Anthropic, search works but skips query expansion.
+OpenAI embeddings work out of the box with `text-embedding-3-large`. Local
+Ollama embeddings are also supported; for example:
+
+```bash
+gbrain config set embedding_provider ollama
+gbrain config set embedding_model qwen3-embedding:4b
+gbrain config set embedding_dimensions 2560
+```
+
+Save API keys or provider environment variables to the shell profile or `.env`.
+Without a working embedding provider, keyword search still works. Without
+Anthropic, search works but skips query expansion.
 
 ## Step 3: Create the Brain
 

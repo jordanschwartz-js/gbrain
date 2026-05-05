@@ -53,20 +53,26 @@ Supabase gives you managed Postgres + pgvector (vector search built in) for $25/
 - pgvector pre-installed, just works
 - Alternative: any Postgres with pgvector extension (self-hosted, Neon, Railway, etc.)
 
+PGLite is the zero-config local default for getting started. Supabase/Postgres is
+the scale and multi-machine path.
+
 ## Prerequisites
 
-- A Supabase account (Pro tier recommended, $25/mo) OR any Postgres with pgvector
-- An OpenAI API key (for semantic search embeddings, ~$4-5 for 7,500 pages)
+- Local PGLite (default) OR a Supabase/Postgres database with pgvector
+- An embedding provider: OpenAI API key for OpenAI embeddings, or local Ollama with a model such as `qwen3-embedding:4b`
 - A git-backed markdown knowledge base (or start fresh)
 
 ## Available init options
 
+- `gbrain init` -- local PGLite brain, no server needed
 - `gbrain init --supabase` -- interactive wizard (prompts for connection string)
 - `gbrain init --url <connection_string>` -- direct, no prompts
 - `gbrain init --non-interactive --url <connection_string>` -- for scripts/agents
 - `gbrain doctor --json` -- health check after init
 
-There is no `--local`, `--sqlite`, or offline mode. GBrain requires Postgres + pgvector.
+There is no `--sqlite` flag. Local zero-config setup uses PGLite, which is
+embedded Postgres with pgvector. Remote/multi-machine setup uses Postgres with
+pgvector, typically Supabase.
 
 ## Phase A: Supabase Setup (recommended)
 
@@ -297,7 +303,8 @@ output. It checks connection, pgvector, RLS, schema version, and embeddings.
 | Connection refused | Supabase project paused, IPv6, or wrong URL | Use Session pooler (port 6543), or supabase.com/dashboard > Restore |
 | Password authentication failed | Wrong password | Project Settings > Database > Reset password |
 | pgvector not available | Extension not enabled | Run `CREATE EXTENSION vector;` in SQL Editor |
-| OpenAI key invalid | Expired or wrong key | platform.openai.com/api-keys > Create new |
+| OpenAI key invalid | Expired or wrong key for OpenAI provider | platform.openai.com/api-keys > Create new |
+| Ollama embedding request fails | Ollama is not running or the configured model is missing | Start Ollama and pull the configured model (for example `qwen3-embedding:4b`) |
 | No pages found | Query before import | Import files into gbrain first |
 | RLS not enabled | Security gap | Run `gbrain init` again (auto-enables RLS) |
 
