@@ -18,7 +18,11 @@ import { hasDatabase, setupDB, teardownDB, getEngine, getConn } from './helpers.
 
 // Mock embedBatch so embed phase doesn't call OpenAI.
 mock.module('../../src/core/embedding.ts', () => ({
-  embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(1536)),
+  EMBEDDING_MODEL: 'qwen3-embedding:4b',
+  EMBEDDING_DIMENSIONS: 2560,
+  configureEmbeddingFromEngine: async () => {},
+  getEmbeddingModel: () => 'qwen3-embedding:4b',
+  embedBatch: async (texts: string[]) => texts.map(() => new Float32Array(2560)),
 }));
 
 const { runDream } = await import('../../src/commands/dream.ts');

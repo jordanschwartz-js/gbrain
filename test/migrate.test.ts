@@ -209,8 +209,8 @@ describe('migrate — ordering guarantee (v15 must NOT be skipped by v16)', () =
 // The base schema shipped 8 gbrain-managed public tables without RLS
 // enabled (access_tokens, mcp_request_log, minion_inbox,
 // minion_attachments, subagent_messages, subagent_tool_executions,
-// subagent_rate_leases, gbrain_cycle_locks). Migration v12 created
-// two more (budget_ledger, budget_reservations) without RLS.
+// subagent_rate_leases, gbrain_cycle_locks). Older brains got
+// budget_ledger and budget_reservations through migration v12 without RLS.
 // Migration v24 backfills the ENABLE RLS statements for existing
 // brains. This test guards against regressions where the migration
 // gets truncated or the wrong tables get enabled.
@@ -252,9 +252,14 @@ describe('migration v24 — rls_backfill_missing_tables', () => {
     expect(sql).toMatch(/IF (NOT )?has_bypass/);
   });
 
-  // Self-healing guard: the budget_* tables are migration-only (v12). If an
-  // operator manually dropped them, or if a brain was somehow pinned to a
-  // pre-v12 version when those tables didn't exist, a bare `ALTER TABLE
+  test('is a no-op on PGLite, where RLS tables do not exist', () => {
+    const v24 = MIGRATIONS.find(m => m.version === 24);
+    expect(v24?.sqlFor?.pglite).toBe('');
+  });
+
+  // Self-healing guard: the budget_* tables originally arrived through v12.
+  // If an operator manually dropped them, or if a brain was somehow pinned to
+  // a pre-v12 version when those tables didn't exist, a bare `ALTER TABLE
   // budget_ledger ...` would fail with 42P01 and abort v24. Wrapping those
   // two ALTERs in an `IF EXISTS (information_schema.tables ...)` check lets
   // the migration skip them silently instead of erroring out. The other 8
@@ -286,6 +291,36 @@ describe('migration v24 — rls_backfill_missing_tables', () => {
 
   test('LATEST_VERSION has caught up to 24', () => {
     expect(LATEST_VERSION).toBeGreaterThanOrEqual(24);
+  });
+});
+
+describe('migration v25 — qwen3_embedding_2560', () => {
+  const v25 = MIGRATIONS.find(m => m.version === 25);
+
+  test('exists with the expected name', () => {
+    expect(v25).toBeDefined();
+    expect(v25?.name).toBe('qwen3_embedding_2560');
+  });
+
+  test('resets old embeddings before changing vector dimensions', () => {
+    const sql = v25!.sql || '';
+    expect(sql).toContain('UPDATE content_chunks');
+    expect(sql).toContain('embedding = NULL');
+    expect(sql).toContain('embedded_at = NULL');
+  });
+
+  test('changes content_chunks.embedding to halfvec(2560) and rebuilds the HNSW index', () => {
+    const sql = v25!.sql || '';
+    expect(sql).toContain('DROP INDEX IF EXISTS idx_chunks_embedding');
+    expect(sql).toContain('ALTER COLUMN embedding TYPE halfvec(2560)');
+    expect(sql).toContain('USING NULL::halfvec(2560)');
+    expect(sql).toContain('CREATE INDEX IF NOT EXISTS idx_chunks_embedding');
+    expect(sql).toContain('halfvec_cosine_ops');
+  });
+
+  test('updates embedding dimension metadata to 2560', () => {
+    const sql = v25!.sql || '';
+    expect(sql).toContain("'embedding_dimensions', '2560'");
   });
 });
 

@@ -31,6 +31,11 @@ interface Migration {
    * Defaults to true.
    */
   transaction?: boolean;
+  /**
+   * Return true when the migration's end state is already present and the
+   * runner can safely mark the version complete without executing SQL.
+   */
+  skipIf?: (engine: BrainEngine) => Promise<boolean>;
   handler?: (engine: BrainEngine) => Promise<void>;
 }
 
@@ -792,13 +797,11 @@ export const MIGRATIONS: Migration[] = [
         ALTER TABLE subagent_rate_leases ENABLE ROW LEVEL SECURITY;
         ALTER TABLE gbrain_cycle_locks ENABLE ROW LEVEL SECURITY;
 
-        -- budget_ledger + budget_reservations are migration-only (v12). Not
-        -- in schema.sql, not re-created on every initSchema. In normal flow
-        -- v12 runs before v24 so they exist, but if an operator manually
-        -- dropped them (unusual — budget data is regenerable from resolver
-        -- logs) or was pinned to a pre-v12 gbrain version when the table
-        -- went away, the bare ALTER would fail with 42P01 and abort v24.
-        -- information_schema.tables lookup makes the statement self-healing.
+        -- budget_ledger + budget_reservations originally arrived through
+        -- migration v12. Fresh schemas now create them directly, but an
+        -- operator may still have manually dropped them (unusual — budget
+        -- data is regenerable from resolver logs). The information_schema
+        -- lookup keeps this backfill self-healing instead of aborting v24.
         IF EXISTS (SELECT 1 FROM information_schema.tables
                     WHERE table_schema = 'public' AND table_name = 'budget_ledger') THEN
           ALTER TABLE budget_ledger ENABLE ROW LEVEL SECURITY;
@@ -811,6 +814,59 @@ export const MIGRATIONS: Migration[] = [
         RAISE NOTICE 'v24: RLS backfill complete (role % has BYPASSRLS)', current_user;
       END $$;
     `,
+    // PGLite is local-only, has no access_tokens/mcp_request_log tables, and
+    // does not expose the public schema through PostgREST. RLS is a Postgres
+    // deployment concern, so older local databases should only record that
+    // this Postgres-only migration is complete.
+    sqlFor: { pglite: '' },
+  },
+  {
+    version: 25,
+    name: 'qwen3_embedding_2560',
+    // Move the embedding storage contract from the old 1536-dim OpenAI shape
+    // to Qwen3-Embedding-4B's full 2560-dim output. pgvector's HNSW index caps
+    // `vector` at 2000 dims, so use halfvec(2560), which is indexable up to
+    // 4000 dims. Existing vectors cannot be padded safely, so mark them stale
+    // and rebuild via `gbrain embed --stale`.
+    sql: `
+      UPDATE content_chunks
+         SET embedding = NULL,
+             embedded_at = NULL
+       WHERE embedding IS NOT NULL;
+
+      DROP INDEX IF EXISTS idx_chunks_embedding;
+      ALTER TABLE content_chunks
+        ALTER COLUMN embedding TYPE halfvec(2560)
+        USING NULL::halfvec(2560);
+      CREATE INDEX IF NOT EXISTS idx_chunks_embedding
+        ON content_chunks USING hnsw (embedding halfvec_cosine_ops);
+
+      INSERT INTO config (key, value) VALUES
+        ('embedding_dimensions', '2560')
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+    `,
+    skipIf: async (engine) => {
+      const configuredDimensions = await engine.getConfig('embedding_dimensions');
+      if (configuredDimensions !== '2560') return false;
+
+      try {
+        const rows = await engine.executeRaw<{ column_type?: string }>(`
+          SELECT format_type(a.atttypid, a.atttypmod) AS column_type
+          FROM pg_attribute a
+          JOIN pg_class c ON c.oid = a.attrelid
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public'
+            AND c.relname = 'content_chunks'
+            AND a.attname = 'embedding'
+            AND NOT a.attisdropped
+        `);
+        return rows[0]?.column_type === 'halfvec(2560)';
+      } catch {
+        // If an engine cannot introspect the column type, take the safe path:
+        // run the migration SQL and let the database be the source of truth.
+        return false;
+      }
+    },
   },
 ];
 
@@ -949,6 +1005,13 @@ export async function runMigrations(engine: BrainEngine): Promise<{ applied: num
   let applied = 0;
   for (const m of pending) {
     console.log(`  [${m.version}] ${m.name}...`);
+
+    if (m.skipIf && await m.skipIf(engine)) {
+      await engine.setConfig('version', String(m.version));
+      console.log(`  [${m.version}] ✓ ${m.name} (already current)`);
+      applied++;
+      continue;
+    }
 
     // Pick SQL: engine-specific `sqlFor` wins over engine-agnostic `sql`.
     const sql = m.sqlFor?.[engine.kind] ?? m.sql;

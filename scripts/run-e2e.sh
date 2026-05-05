@@ -20,6 +20,12 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Some E2E files intentionally run `gbrain init`, which writes
+# ~/.gbrain/config.json. Keep those writes isolated so running the suite with a
+# real DATABASE_URL never points the developer's active brain at the test DB.
+tmp_root=$(mktemp -d "${TMPDIR:-/tmp}/gbrain-e2e-home.XXXXXX")
+trap 'rm -rf "$tmp_root"' EXIT
+
 pass_files=0
 fail_files=0
 fail_list=()
@@ -28,9 +34,11 @@ total_fail=0
 
 for f in test/e2e/*.test.ts; do
   name=$(basename "$f")
+  file_home="$tmp_root/${name%.test.ts}"
+  mkdir -p "$file_home"
   echo ""
   echo "=== $name ==="
-  if output=$(bun test "$f" 2>&1); then
+  if output=$(HOME="$file_home" bun test "$f" 2>&1); then
     pass_files=$((pass_files + 1))
     # Extract pass/fail counts from bun's summary (e.g., "123 pass")
     p=$(echo "$output" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)

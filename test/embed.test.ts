@@ -9,6 +9,10 @@ let maxConcurrentEmbedCalls = 0;
 let totalEmbedCalls = 0;
 
 mock.module('../src/core/embedding.ts', () => ({
+  EMBEDDING_MODEL: 'qwen3-embedding:4b',
+  EMBEDDING_DIMENSIONS: 2560,
+  configureEmbeddingFromEngine: async () => {},
+  getEmbeddingModel: () => 'qwen3-embedding:4b',
   embedBatch: async (texts: string[]) => {
     activeEmbedCalls++;
     totalEmbedCalls++;
@@ -18,7 +22,7 @@ mock.module('../src/core/embedding.ts', () => ({
     // Simulate API latency so concurrent workers actually overlap.
     await new Promise(r => setTimeout(r, 30));
     activeEmbedCalls--;
-    return texts.map(() => new Float32Array(1536));
+    return texts.map(() => new Float32Array(2560));
   },
 }));
 

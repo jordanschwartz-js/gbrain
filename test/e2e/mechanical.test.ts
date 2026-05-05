@@ -1080,11 +1080,10 @@ describeE2E('E2E: RLS Verification', () => {
   }, 60_000);
 
   // Regression test for the v24 self-healing guard. If an operator manually
-  // drops budget_ledger and/or budget_reservations (they are migration-only
-  // per v12, not in schema.sql, and the data is regenerable from resolver
-  // logs — so dropping them is a reasonable cleanup), v24 must NOT fail
-  // with 42P01. The information_schema.tables IF EXISTS guards around those
-  // two ALTERs let the migration skip them and continue.
+  // drops budget_ledger and/or budget_reservations (they originally arrived
+  // through v12, and the data is regenerable from resolver logs), v24 must
+  // NOT fail with 42P01. The information_schema.tables IF EXISTS guards
+  // around those two ALTERs let the migration skip them and continue.
   //
   // Without the guard, a brain with dropped budget_* tables would get stuck
   // in an infinite retry loop: v24 fails → transaction rolls back →
@@ -1110,9 +1109,10 @@ describeE2E('E2E: RLS Verification', () => {
         ON CONFLICT (key) DO UPDATE SET value = '23'
       `);
 
-      // Re-trigger initSchema via the CLI. With the guard, this should
-      // apply v24 cleanly and advance version to 24. Without the guard,
-      // this would error out with 42P01 and leave version at 23.
+      // Re-trigger initSchema via the CLI. With the guard, this should apply
+      // v24 cleanly and then allow any later already-current migrations to
+      // advance. Without the guard, this would error out with 42P01 and leave
+      // version at 23.
       const result = Bun.spawnSync({
         cmd: ['bun', 'run', 'src/cli.ts', 'init', '--non-interactive', '--url', process.env.DATABASE_URL!],
         cwd: cliCwd, env: cliEnv(), timeout: 30_000,
@@ -1124,19 +1124,22 @@ describeE2E('E2E: RLS Verification', () => {
       expect(result.exitCode).toBe(0);
       expect(stderr + stdout).not.toMatch(/42P01|does not exist.*budget/i);
 
-      // Version must have advanced to 24.
+      // Version must have advanced past the guarded v24 migration. Later
+      // migrations may also mark complete when their end state already exists.
       const afterRows = await conn.unsafe(`SELECT value FROM config WHERE key = 'version'`);
-      expect((afterRows[0] as any).value).toBe('24');
+      expect(Number((afterRows[0] as any).value)).toBeGreaterThanOrEqual(24);
 
-      // The tables stayed dropped (v12 didn't re-run because current=23 > 12
-      // was already true before this test ran). That's intentional — we're
-      // proving v24 doesn't require those tables to exist.
+      // The current base schema self-heals these tables before migrations run.
+      // The key invariant is that v24 no longer requires them to exist before
+      // initSchema starts.
       const tblRows = await conn.unsafe(`
         SELECT tablename FROM pg_tables
         WHERE schemaname = 'public'
           AND tablename IN ('budget_ledger', 'budget_reservations')
       `);
-      expect(tblRows.length).toBe(0);
+      expect(new Set(tblRows.map((r: any) => r.tablename))).toEqual(
+        new Set(['budget_ledger', 'budget_reservations'])
+      );
     } finally {
       // Restore: recreate the budget_* tables (minimal schema — just enough
       // to keep the rest of the test suite happy) and reset version.

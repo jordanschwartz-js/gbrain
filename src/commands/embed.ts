@@ -1,5 +1,5 @@
 import type { BrainEngine } from '../core/engine.ts';
-import { embedBatch } from '../core/embedding.ts';
+import { configureEmbeddingFromEngine, embedBatch, getEmbeddingModel } from '../core/embedding.ts';
 import type { ChunkInput } from '../core/types.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
 import { createProgress, type ProgressReporter } from '../core/progress.ts';
@@ -61,6 +61,8 @@ export interface EmbedResult {
  * auto-embed step) can report embeddings in their own structured output.
  */
 export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promise<EmbedResult> {
+  await configureEmbeddingFromEngine(engine);
+
   const result: EmbedResult = {
     embedded: 0,
     skipped: 0,
@@ -204,6 +206,7 @@ async function embedPage(
     chunk_text: c.chunk_text,
     chunk_source: c.chunk_source,
     embedding: embeddingMap.get(c.chunk_index),
+    model: embeddingMap.has(c.chunk_index) ? getEmbeddingModel() : c.model,
     token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
   }));
 
@@ -270,6 +273,7 @@ async function embedAll(
         chunk_text: c.chunk_text,
         chunk_source: c.chunk_source,
         embedding: embeddingMap.get(c.chunk_index) ?? undefined,
+        model: embeddingMap.has(c.chunk_index) ? getEmbeddingModel() : c.model,
         token_count: c.token_count || Math.ceil(c.chunk_text.length / 4),
       }));
       await engine.upsertChunks(page.slug, updated);

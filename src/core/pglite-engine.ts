@@ -255,14 +255,14 @@ export class PGLiteEngine implements BrainEngine {
       `SELECT
         p.slug, p.id as page_id, p.title, p.type, p.source_id,
         cc.id as chunk_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
-        1 - (cc.embedding <=> $1::vector) AS score,
+        1 - (cc.embedding <=> $1::halfvec) AS score,
         CASE WHEN p.updated_at < (
           SELECT MAX(te.created_at) FROM timeline_entries te WHERE te.page_id = p.id
         ) THEN true ELSE false END AS stale
       FROM content_chunks cc
       JOIN pages p ON p.id = cc.page_id
       WHERE cc.embedding IS NOT NULL ${detailFilter}
-      ORDER BY cc.embedding <=> $1::vector
+      ORDER BY cc.embedding <=> $1::halfvec
       LIMIT $2
       OFFSET $3`,
       [vecStr, limit, offset]
@@ -321,7 +321,7 @@ export class PGLiteEngine implements BrainEngine {
         : null;
 
       if (embeddingStr) {
-        rowParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::vector, $${paramIdx++}, $${paramIdx++}, now())`);
+        rowParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::halfvec, $${paramIdx++}, $${paramIdx++}, now())`);
         params.push(pageId, chunk.chunk_index, chunk.chunk_text, chunk.chunk_source, embeddingStr, chunk.model || 'text-embedding-3-large', chunk.token_count || null);
       } else {
         rowParts.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, NULL, $${paramIdx++}, $${paramIdx++}, NULL)`);

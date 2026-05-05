@@ -8,6 +8,7 @@ import { resolve, relative, sep } from 'path';
 import type { BrainEngine } from './engine.ts';
 import { clampSearchLimit } from './engine.ts';
 import type { GBrainConfig } from './config.ts';
+import { loadConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { hybridSearch } from './search/hybrid.ts';
@@ -271,11 +272,18 @@ const put_page: Operation = {
     }
 
     if (ctx.dryRun) return { dry_run: true, action: 'put_page', slug: p.slug };
-    // Skip embedding when no OpenAI key is configured. importFromContent's existing
-    // try/catch around embed only catches; without a key the OpenAI client would
-    // attempt 5 retries with exponential backoff (up to ~2 minutes total) before
-    // giving up. Detect early.
-    const noEmbed = !process.env.OPENAI_API_KEY;
+    // Skip embedding only when the selected provider cannot run. For OpenAI,
+    // fail fast when no API key is configured; local providers like Ollama do
+    // not need OPENAI_API_KEY.
+    const dbEmbeddingProvider = await ctx.engine.getConfig('embedding_provider').catch(() => null);
+    const embedding_provider = process.env.GBRAIN_EMBEDDING_PROVIDER
+      || ctx.config.embedding_provider
+      || dbEmbeddingProvider
+      || loadConfig()?.embedding_provider
+      || 'openai';
+    const noEmbed = embedding_provider === 'ollama'
+      ? false
+      : !process.env.OPENAI_API_KEY && !ctx.config.openai_api_key && !loadConfig()?.openai_api_key;
     const result = await importFromContent(ctx.engine, slug, p.content as string, { noEmbed });
 
     // Auto-link post-hook: runs AFTER importFromContent (which is its own

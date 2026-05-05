@@ -29,6 +29,10 @@ export interface GBrainConfig {
   database_path?: string;
   openai_api_key?: string;
   anthropic_api_key?: string;
+  embedding_provider?: 'openai' | 'ollama';
+  embedding_model?: string;
+  embedding_dimensions?: number;
+  ollama_embed_url?: string;
   /**
    * Optional storage backend config (S3/Supabase/local). Shape matches
    * `StorageConfig` in `./storage.ts`. Typed as `unknown` here to avoid
@@ -64,6 +68,10 @@ export function loadConfig(): GBrainConfig | null {
     engine: inferredEngine,
     ...(dbUrl ? { database_url: dbUrl } : {}),
     ...(process.env.OPENAI_API_KEY ? { openai_api_key: process.env.OPENAI_API_KEY } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_PROVIDER ? { embedding_provider: process.env.GBRAIN_EMBEDDING_PROVIDER } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_MODEL ? { embedding_model: process.env.GBRAIN_EMBEDDING_MODEL } : {}),
+    ...(process.env.GBRAIN_EMBEDDING_DIMENSIONS ? { embedding_dimensions: parseInt(process.env.GBRAIN_EMBEDDING_DIMENSIONS, 10) } : {}),
+    ...(process.env.GBRAIN_OLLAMA_EMBED_URL ? { ollama_embed_url: process.env.GBRAIN_OLLAMA_EMBED_URL } : {}),
   };
   return merged as GBrainConfig;
 }

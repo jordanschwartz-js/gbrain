@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS pages (
 CREATE INDEX IF NOT EXISTS idx_pages_type ON pages(type);
 CREATE INDEX IF NOT EXISTS idx_pages_frontmatter ON pages USING GIN(frontmatter);
 CREATE INDEX IF NOT EXISTS idx_pages_trgm ON pages USING GIN(title gin_trgm_ops);
+-- v0.13.1 #170: avoids slow scans when listing pages newest-first.
+CREATE INDEX IF NOT EXISTS idx_pages_updated_at_desc ON pages (updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pages_source_id ON pages(source_id);
 
 -- ============================================================
@@ -71,7 +73,7 @@ CREATE TABLE IF NOT EXISTS content_chunks (
   chunk_index   INTEGER NOT NULL,
   chunk_text    TEXT    NOT NULL,
   chunk_source  TEXT    NOT NULL DEFAULT 'compiled_truth',
-  embedding     vector(1536),
+  embedding     halfvec(2560),
   model         TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
   token_count   INTEGER,
   embedded_at   TIMESTAMPTZ,
@@ -80,7 +82,37 @@ CREATE TABLE IF NOT EXISTS content_chunks (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_chunks_page_index ON content_chunks(page_id, chunk_index);
 CREATE INDEX IF NOT EXISTS idx_chunks_page ON content_chunks(page_id);
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding vector_cosine_ops);
+
+-- Self-heal existing brains that still have vector(1536). This must run
+-- before the HNSW halfvec index is created, otherwise initSchema can fail
+-- before migration v25 gets a chance to repair the column.
+DO $$
+DECLARE
+  embedding_type TEXT;
+BEGIN
+  SELECT format_type(a.atttypid, a.atttypmod) INTO embedding_type
+  FROM pg_attribute a
+  JOIN pg_class c ON c.oid = a.attrelid
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  WHERE n.nspname = 'public'
+    AND c.relname = 'content_chunks'
+    AND a.attname = 'embedding'
+    AND NOT a.attisdropped;
+
+  IF embedding_type IS DISTINCT FROM 'halfvec(2560)' THEN
+    DROP INDEX IF EXISTS idx_chunks_embedding;
+    ALTER TABLE content_chunks
+      ALTER COLUMN embedding TYPE halfvec(2560)
+      USING NULL::halfvec(2560);
+    UPDATE content_chunks
+      SET embedded_at = NULL,
+          model = 'qwen3-embedding:4b'
+      WHERE embedded_at IS NOT NULL
+         OR model <> 'qwen3-embedding:4b';
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding ON content_chunks USING hnsw (embedding halfvec_cosine_ops);
 
 -- ============================================================
 -- links: cross-references between pages
@@ -186,12 +218,41 @@ CREATE TABLE IF NOT EXISTS config (
 );
 
 INSERT INTO config (key, value) VALUES
-  ('version', '1'),
+  ('version', '25'),
   ('engine', 'pglite'),
   ('embedding_model', 'text-embedding-3-large'),
-  ('embedding_dimensions', '1536'),
+  ('embedding_dimensions', '2560'),
   ('chunk_strategy', 'semantic')
 ON CONFLICT (key) DO NOTHING;
+
+-- ============================================================
+-- budget_*: resolver spend reservations
+-- ============================================================
+CREATE TABLE IF NOT EXISTS budget_ledger (
+  scope          TEXT          NOT NULL,
+  resolver_id    TEXT          NOT NULL,
+  local_date     DATE          NOT NULL,
+  reserved_usd   NUMERIC(12,4) NOT NULL DEFAULT 0,
+  committed_usd  NUMERIC(12,4) NOT NULL DEFAULT 0,
+  cap_usd        NUMERIC(12,4),
+  created_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  updated_at     TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  PRIMARY KEY (scope, resolver_id, local_date)
+);
+
+CREATE TABLE IF NOT EXISTS budget_reservations (
+  reservation_id TEXT          PRIMARY KEY,
+  scope          TEXT          NOT NULL,
+  resolver_id    TEXT          NOT NULL,
+  local_date     DATE          NOT NULL,
+  estimate_usd   NUMERIC(12,4) NOT NULL,
+  reserved_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),
+  expires_at     TIMESTAMPTZ   NOT NULL,
+  status         TEXT          NOT NULL DEFAULT 'held'
+);
+
+CREATE INDEX IF NOT EXISTS idx_budget_reservations_expires
+  ON budget_reservations(expires_at) WHERE status = 'held';
 
 -- ============================================================
 -- Minion Jobs: BullMQ-inspired Postgres-native job queue
@@ -226,6 +287,8 @@ CREATE TABLE IF NOT EXISTS minion_jobs (
   remove_on_complete BOOLEAN   NOT NULL DEFAULT FALSE,
   remove_on_fail   BOOLEAN     NOT NULL DEFAULT FALSE,
   idempotency_key  TEXT,
+  quiet_hours      JSONB,
+  stagger_key      TEXT,
   result           JSONB,
   progress         JSONB,
   error_text       TEXT,
@@ -245,6 +308,11 @@ CREATE TABLE IF NOT EXISTS minion_jobs (
   CONSTRAINT chk_timeout_positive CHECK (timeout_ms IS NULL OR timeout_ms > 0)
 );
 
+-- Self-heal partially initialized brains where config.version is current but
+-- this older table already existed before v13 added quiet_hours/stagger_key.
+ALTER TABLE minion_jobs ADD COLUMN IF NOT EXISTS quiet_hours JSONB;
+ALTER TABLE minion_jobs ADD COLUMN IF NOT EXISTS stagger_key TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_claim ON minion_jobs (queue, priority ASC, created_at ASC) WHERE status = 'waiting';
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_status ON minion_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_minion_jobs_stalled ON minion_jobs (lock_until) WHERE status = 'active';
@@ -256,6 +324,8 @@ CREATE INDEX IF NOT EXISTS idx_minion_jobs_parent_status ON minion_jobs (parent_
   WHERE parent_job_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_minion_jobs_idempotency ON minion_jobs (idempotency_key)
   WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_minion_jobs_stagger_key ON minion_jobs (stagger_key)
+  WHERE stagger_key IS NOT NULL;
 
 -- Inbox table for sidechannel messaging
 CREATE TABLE IF NOT EXISTS minion_inbox (

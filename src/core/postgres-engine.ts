@@ -287,7 +287,7 @@ export class PostgresEngine implements BrainEngine {
         SELECT
           p.slug, p.id as page_id, p.title, p.type, p.source_id,
           cc.id as chunk_id, cc.chunk_index, cc.chunk_text, cc.chunk_source,
-          1 - (cc.embedding <=> ${vecStr}::vector) AS score,
+          1 - (cc.embedding <=> ${vecStr}::halfvec) AS score,
           false AS stale
         FROM content_chunks cc
         JOIN pages p ON p.id = cc.page_id
@@ -295,7 +295,7 @@ export class PostgresEngine implements BrainEngine {
           ${detailLow ? sql`AND cc.chunk_source = 'compiled_truth'` : sql``}
           ${type ? sql`AND p.type = ${type}` : sql``}
           ${excludeSlugs?.length ? sql`AND p.slug != ALL(${excludeSlugs})` : sql``}
-        ORDER BY cc.embedding <=> ${vecStr}::vector
+        ORDER BY cc.embedding <=> ${vecStr}::halfvec
         LIMIT ${limit}
         OFFSET ${offset}
       `;
@@ -349,7 +349,7 @@ export class PostgresEngine implements BrainEngine {
         : null;
 
       if (embeddingStr) {
-        rows.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::vector, $${paramIdx++}, $${paramIdx++}, now())`);
+        rows.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}::halfvec, $${paramIdx++}, $${paramIdx++}, now())`);
         params.push(pageId, chunk.chunk_index, chunk.chunk_text, chunk.chunk_source, embeddingStr, chunk.model || 'text-embedding-3-large', chunk.token_count || null);
       } else {
         rows.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, NULL, $${paramIdx++}, $${paramIdx++}, NULL)`);
