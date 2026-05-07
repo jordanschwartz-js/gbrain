@@ -25,6 +25,7 @@ import { validateSlug, contentHash, rowToPage, rowToChunk, rowToSearchResult } f
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause } from './search/sql-ranking.ts';
 import * as gw from './ai/gateway.ts';
+import { assertUniqueChunkIndices } from './chunk-validation.ts';
 
 function embeddingSqlCast(): 'halfvec' | 'vector' {
   try {
@@ -537,6 +538,10 @@ export class PGLiteEngine implements BrainEngine {
       params.push(filters.tag);
       where.push(`t.tag = $${params.length}`);
     }
+    if (filters?.sourceId) {
+      params.push(filters.sourceId);
+      where.push(`p.source_id = $${params.length}`);
+    }
     if (filters?.updated_after) {
       params.push(filters.updated_after);
       where.push(`p.updated_at > $${params.length}::timestamptz`);
@@ -819,6 +824,7 @@ export class PGLiteEngine implements BrainEngine {
   // Chunks
   async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
     const sourceId = opts?.sourceId;
+    assertUniqueChunkIndices(slug, chunks, opts);
     // Get page_id
     const pageResult = sourceId
       ? await this.db.query('SELECT id FROM pages WHERE slug = $1 AND source_id = $2 LIMIT 1', [slug, sourceId])
@@ -928,25 +934,30 @@ export class PGLiteEngine implements BrainEngine {
     return (rows as Record<string, unknown>[]).map(r => rowToChunk(r));
   }
 
-  async countStaleChunks(): Promise<number> {
+  async countStaleChunks(opts?: { sourceId?: string }): Promise<number> {
+    const sourceId = opts?.sourceId;
     const { rows } = await this.db.query(
       `SELECT count(*)::int AS count
-         FROM content_chunks
-        WHERE embedding IS NULL`,
+         FROM content_chunks cc
+         JOIN pages p ON p.id = cc.page_id
+        WHERE cc.embedding IS NULL ${sourceId ? 'AND p.source_id = $1' : ''}`,
+      sourceId ? [sourceId] : [],
     );
     const count = (rows[0] as { count: number } | undefined)?.count ?? 0;
     return Number(count);
   }
 
-  async listStaleChunks(): Promise<StaleChunkRow[]> {
+  async listStaleChunks(opts?: { sourceId?: string }): Promise<StaleChunkRow[]> {
+    const sourceId = opts?.sourceId;
     const { rows } = await this.db.query(
       `SELECT p.source_id, p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
               cc.model, cc.token_count
          FROM content_chunks cc
          JOIN pages p ON p.id = cc.page_id
-        WHERE cc.embedding IS NULL
+        WHERE cc.embedding IS NULL ${sourceId ? 'AND p.source_id = $1' : ''}
         ORDER BY p.id, cc.chunk_index
         LIMIT 100000`,
+      sourceId ? [sourceId] : [],
     );
     return rows as unknown as StaleChunkRow[];
   }

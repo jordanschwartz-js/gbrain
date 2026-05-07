@@ -767,12 +767,12 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
   let embedded = 0;
   if (!noEmbed && pagesAffected.length > 0 && pagesAffected.length <= 100) {
     try {
-      const { runEmbed } = await import('./embed.ts');
-      await runEmbed(engine, ['--slugs', ...pagesAffected]);
-      // Before commit 2 lands: runEmbed is void. Best estimate is pagesAffected,
-      // since runEmbed re-embeds every requested slug. Commit 2 sharpens this
-      // with EmbedResult.embedded.
-      embedded = pagesAffected.length;
+      const { runEmbedCore } = await import('./embed.ts');
+      const result = await runEmbedCore(engine, {
+        slugs: pagesAffected,
+        sourceId: opts.sourceId,
+      });
+      embedded = result.embedded;
     } catch { /* embedding is best-effort */ }
   } else if (noEmbed || totalChanges > 100) {
     console.log(`Text imported. Run 'gbrain embed --stale' to generate embeddings.`);
@@ -885,15 +885,19 @@ async function performFullSync(
   // v0.20.0 Cathedral II Layer 12: persist chunker version for the gate.
   await writeChunkerVersion(engine, opts.sourceId, String(CHUNKER_VERSION));
 
-  // Full sync doesn't track pagesAffected, so fall back to embed --stale.
-  // Before commit 2: runEmbed is void; use result.imported as best estimate of
-  // pages touched. Commit 2 sharpens this with real EmbedResult counts.
+  // Full sync doesn't track pagesAffected through the sync manifest, so use a
+  // source-scoped stale embed pass. Without sourceId, same as the historical
+  // whole-brain stale fallback. With sourceId, a source-specific full sync does
+  // not accidentally embed stale chunks from sibling sources that share slugs.
   let embedded = 0;
   if (!opts.noEmbed) {
     try {
-      const { runEmbed } = await import('./embed.ts');
-      await runEmbed(engine, ['--stale']);
-      embedded = result.imported;
+      const { runEmbedCore } = await import('./embed.ts');
+      const embedResult = await runEmbedCore(engine, {
+        stale: true,
+        sourceId: opts.sourceId,
+      });
+      embedded = embedResult.embedded;
     } catch { /* embedding is best-effort */ }
   }
 
@@ -907,7 +911,7 @@ async function performFullSync(
     renamed: 0,
     chunksCreated: result.chunksCreated,
     embedded,
-    pagesAffected: [],
+    pagesAffected: result.importedSlugs,
   };
 }
 

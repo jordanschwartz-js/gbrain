@@ -1,8 +1,9 @@
 import type { BrainEngine } from '../core/engine.ts';
 import { embedBatch } from '../core/embedding.ts';
+import { getEmbeddingModel } from '../core/ai/gateway.ts';
 import type { ChunkInput } from '../core/types.ts';
 import { chunkText } from '../core/chunkers/recursive.ts';
-import { createProgress, type ProgressReporter } from '../core/progress.ts';
+import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
 
 export interface EmbedOpts {
@@ -14,6 +15,8 @@ export interface EmbedOpts {
   slugs?: string[];
   /** Embed a single page. */
   slug?: string;
+  /** Optional source scope for slug-targeted embedding. */
+  sourceId?: string;
   /**
    * Dry run: enumerate what WOULD be embedded (stale chunk counts)
    * without calling the embedding model or writing to the engine.
@@ -73,19 +76,19 @@ export async function runEmbedCore(engine: BrainEngine, opts: EmbedOpts): Promis
   if (opts.slugs && opts.slugs.length > 0) {
     for (const s of opts.slugs) {
       try {
-        await embedPage(engine, s, !!opts.dryRun, result);
+        await embedPage(engine, s, !!opts.dryRun, result, opts.sourceId);
       } catch (e: unknown) {
-        console.error(`  Error embedding ${s}: ${e instanceof Error ? e.message : e}`);
+        console.error(`  Error embedding ${opts.sourceId ? `${opts.sourceId}:` : ''}${s}: ${e instanceof Error ? e.message : e}`);
       }
     }
     return result;
   }
   if (opts.all || opts.stale) {
-    await embedAll(engine, !!opts.stale, !!opts.dryRun, result, opts.onProgress);
+    await embedAll(engine, !!opts.stale, !!opts.dryRun, result, opts.onProgress, opts.sourceId);
     return result;
   }
   if (opts.slug) {
-    await embedPage(engine, opts.slug, !!opts.dryRun, result);
+    await embedPage(engine, opts.slug, !!opts.dryRun, result, opts.sourceId);
     return result;
   }
   throw new Error('No embed target specified. Pass { slug }, { slugs }, { all }, or { stale }.');
@@ -96,19 +99,20 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
   const all = args.includes('--all');
   const stale = args.includes('--stale');
   const dryRun = args.includes('--dry-run');
+  const sourceId = parseFlag(args, '--source');
 
   let opts: EmbedOpts;
   if (slugsIdx >= 0) {
-    opts = { slugs: args.slice(slugsIdx + 1).filter(a => !a.startsWith('--')), dryRun };
+    opts = { slugs: parseSlugs(args, slugsIdx), dryRun, sourceId };
   } else if (all || stale) {
-    opts = { all, stale, dryRun };
+    opts = { all, stale, dryRun, sourceId };
   } else {
-    const slug = args.find(a => !a.startsWith('--'));
+    const slug = args.find((a, i) => !a.startsWith('--') && args[i - 1] !== '--source');
     if (!slug) {
-      console.error('Usage: gbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [--dry-run]');
+      console.error('Usage: gbrain embed [<slug>|--all|--stale|--slugs s1 s2 ...] [--source id] [--dry-run]');
       process.exit(1);
     }
-    opts = { slug, dryRun };
+    opts = { slug, dryRun, sourceId };
   }
 
   // CLI path: wire a reporter so --progress-json / --quiet / TTY rendering
@@ -133,6 +137,49 @@ export async function runEmbed(engine: BrainEngine, args: string[]): Promise<Emb
     console.error(e instanceof Error ? e.message : String(e));
     process.exit(1);
   }
+}
+
+export function resolveEmbedConcurrency(model?: string): number {
+  const explicit = parsePositiveInt(process.env.GBRAIN_EMBED_CONCURRENCY);
+  if (explicit !== null) return explicit;
+
+  const configuredModel = (model ?? safeConfiguredEmbeddingModel() ?? '').toLowerCase();
+  if (configuredModel.startsWith('ollama:')) return 1;
+  return 20;
+}
+
+function safeConfiguredEmbeddingModel(): string | undefined {
+  try {
+    return getEmbeddingModel();
+  } catch {
+    return process.env.GBRAIN_EMBEDDING_MODEL;
+  }
+}
+
+function parsePositiveInt(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  if (idx < 0 || idx + 1 >= args.length || args[idx + 1].startsWith('--')) return undefined;
+  return args[idx + 1];
+}
+
+function parseSlugs(args: string[], slugsIdx: number): string[] {
+  const slugs: string[] = [];
+  for (let i = slugsIdx + 1; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--source') {
+      i++;
+      continue;
+    }
+    if (arg.startsWith('--')) continue;
+    slugs.push(arg);
+  }
+  return slugs;
 }
 
 async function embedPage(
@@ -215,6 +262,7 @@ async function embedAll(
   dryRun: boolean,
   result: EmbedResult,
   onProgress?: (done: number, total: number, embedded: number) => void,
+  sourceId?: string,
 ) {
   // ─────────────────────────────────────────────────────────────
   // Stale-only fast path: avoid the listPages + per-page getChunks
@@ -230,20 +278,20 @@ async function embedAll(
   // chunks that already have embeddings.
   // ─────────────────────────────────────────────────────────────
   if (staleOnly) {
-    return await embedAllStale(engine, dryRun, result, onProgress);
+    return await embedAllStale(engine, dryRun, result, onProgress, sourceId);
   }
 
-  const pages = await engine.listPages({ limit: 100000 });
+  const pages = await engine.listPages({ limit: 100000, sourceId });
   let processed = 0;
 
   // Concurrency limit for parallel page embedding.
   // Each worker pulls pages from a shared queue and makes independent
   // embedBatch calls to the configured provider + upsertChunks to the engine.
   //
-  // Default 20: keeps provider/API concurrency reasonable and avoids
-  // overwhelming postgres connection pools. Users can tune via
-  // GBRAIN_EMBED_CONCURRENCY env var based on their provider tier/infra.
-  const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
+  // Hosted providers keep the historical default of 20. Local Ollama defaults
+  // to one worker so autopilot cannot saturate the local model server.
+  // Users can tune via GBRAIN_EMBED_CONCURRENCY when they know their setup.
+  const CONCURRENCY = resolveEmbedConcurrency();
 
   async function embedOnePage(page: typeof pages[number]) {
     const sourceOpts = page.source_id ? { sourceId: page.source_id } : undefined;
@@ -335,10 +383,12 @@ async function embedAllStale(
   dryRun: boolean,
   result: EmbedResult,
   onProgress?: (done: number, total: number, embedded: number) => void,
+  sourceId?: string,
 ) {
   // Pre-flight: 0 stale chunks → nothing to do, no further DB reads.
   // Cheapest possible exit on the autopilot common case.
-  const staleCount = await engine.countStaleChunks();
+  const sourceOpts = sourceId ? { sourceId } : undefined;
+  const staleCount = await engine.countStaleChunks(sourceOpts);
   if (staleCount === 0) {
     if (dryRun) {
       console.log('[dry-run] Would embed 0 chunks (0 stale found)');
@@ -349,7 +399,7 @@ async function embedAllStale(
   }
 
   // Pull only the stale chunks (no embedding column).
-  const staleRows = await engine.listStaleChunks();
+  const staleRows = await engine.listStaleChunks(sourceOpts);
   // Group by source+slug so same-slug pages in different sources do not collide.
   const byPage = new Map<string, typeof staleRows>();
   for (const row of staleRows) {
@@ -381,7 +431,7 @@ async function embedAllStale(
     return;
   }
 
-  const CONCURRENCY = parseInt(process.env.GBRAIN_EMBED_CONCURRENCY || '20', 10);
+  const CONCURRENCY = resolveEmbedConcurrency();
   let processed = 0;
 
   async function embedOnePage(page: { sourceId?: string; slug: string }) {

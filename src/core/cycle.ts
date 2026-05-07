@@ -630,10 +630,10 @@ async function runPhaseExtract(
   }
 }
 
-async function runPhaseEmbed(engine: BrainEngine, dryRun: boolean): Promise<PhaseResult> {
+async function runPhaseEmbed(engine: BrainEngine, dryRun: boolean, sourceId?: string): Promise<PhaseResult> {
   try {
     const { runEmbedCore } = await import('../commands/embed.ts');
-    const result = await runEmbedCore(engine, { stale: true, dryRun });
+    const result = await runEmbedCore(engine, { stale: true, dryRun, sourceId });
     const embeddedCount = dryRun ? result.would_embed : result.embedded;
     return {
       phase: 'embed',
@@ -772,6 +772,7 @@ export async function runCycle(
   const pull = !!opts.pull;
   const timestamp = new Date().toISOString();
   const phaseResults: PhaseResult[] = [];
+  let cycleSourceId: string | undefined;
 
   const progress = createProgress(cliOptsToProgressOptions(getCliOptions()));
 
@@ -862,6 +863,7 @@ export async function runCycle(
         });
       } else {
         progress.start('cycle.sync');
+        cycleSourceId = cycleSourceId ?? await resolveSourceForDir(engine, opts.brainDir);
         const { result, duration_ms } = await timePhase(() => runPhaseSync(engine, opts.brainDir, dryRun, pull, phases.includes('extract')));
         result.duration_ms = duration_ms;
         // Capture changed slugs for incremental extract.
@@ -968,7 +970,8 @@ export async function runCycle(
         });
       } else {
         progress.start('cycle.embed');
-        const { result, duration_ms } = await timePhase(() => runPhaseEmbed(engine, dryRun));
+        cycleSourceId = cycleSourceId ?? await resolveSourceForDir(engine, opts.brainDir);
+        const { result, duration_ms } = await timePhase(() => runPhaseEmbed(engine, dryRun, cycleSourceId));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();

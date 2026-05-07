@@ -10,7 +10,12 @@
  */
 
 import { describe, test, expect } from 'bun:test';
-import { resolveGbrainCliPath } from '../src/commands/autopilot.ts';
+import {
+  buildAutopilotCycleJobData,
+  buildAutopilotCycleJobOptions,
+  resolveAutopilotCycleTimeoutMs,
+  resolveGbrainCliPath,
+} from '../src/commands/autopilot.ts';
 
 describe('resolveGbrainCliPath', () => {
   test('returns a non-empty string or throws with a clear install hint', () => {
@@ -79,5 +84,30 @@ describe('resolveGbrainCliPath', () => {
     } finally {
       process.argv[1] = origArg1;
     }
+  });
+});
+
+describe('autopilot-cycle queue safety', () => {
+  test('uses a long enough timeout for local embedding recovery work', () => {
+    expect(resolveAutopilotCycleTimeoutMs(300)).toBeGreaterThanOrEqual(30 * 60 * 1000);
+  });
+
+  test('submits queued cycles with timeout and stall safety options', () => {
+    const opts = buildAutopilotCycleJobOptions(300, '2026-05-07T20:40:00.000Z');
+
+    expect(opts.timeout_ms).toBeGreaterThanOrEqual(30 * 60 * 1000);
+    expect(opts.max_stalled).toBe(20);
+    expect(opts.maxWaiting).toBe(1);
+    expect(opts.idempotency_key).toBe('autopilot-cycle:2026-05-07T20:40:00.000Z');
+  });
+
+  test('preserves --no-pull in queued autopilot-cycle job data', () => {
+    expect(buildAutopilotCycleJobData('/brain', true)).toEqual({
+      repoPath: '/brain',
+      noPull: true,
+    });
+    expect(buildAutopilotCycleJobData('/brain', false)).toEqual({
+      repoPath: '/brain',
+    });
   });
 });

@@ -362,6 +362,13 @@ describe('performSync dry-run never writes', () => {
 });
 
 describe('sync regression — #132 nested transaction deadlock', () => {
+  test('source-scoped auto-embed preserves sourceId for changed slugs', async () => {
+    const source = await Bun.file(new URL('../src/commands/sync.ts', import.meta.url)).text();
+
+    expect(source).toContain('runEmbedCore');
+    expect(source).toMatch(/sourceId:\s*opts\.sourceId/);
+  });
+
   test('src/commands/sync.ts does not wrap the add/modify loop in engine.transaction()', async () => {
     const source = await Bun.file(new URL('../src/commands/sync.ts', import.meta.url)).text();
     // Accept either of the historical loop shapes: the original inline

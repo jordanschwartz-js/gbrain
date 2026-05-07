@@ -24,6 +24,7 @@ import { validateSlug, contentHash, rowToPage, rowToChunk, rowToSearchResult, pa
 import { resolveBoostMap, resolveHardExcludes } from './search/source-boost.ts';
 import { buildSourceFactorCase, buildHardExcludeClause, buildVisibilityClause } from './search/sql-ranking.ts';
 import * as gw from './ai/gateway.ts';
+import { assertUniqueChunkIndices } from './chunk-validation.ts';
 
 function embeddingSqlCast(): 'halfvec' | 'vector' {
   try {
@@ -484,6 +485,7 @@ export class PostgresEngine implements BrainEngine {
     const typeCondition = filters?.type ? sql`AND p.type = ${filters.type}` : sql``;
     const tagJoin = filters?.tag ? sql`JOIN tags t ON t.page_id = p.id` : sql``;
     const tagCondition = filters?.tag ? sql`AND t.tag = ${filters.tag}` : sql``;
+    const sourceCondition = filters?.sourceId ? sql`AND p.source_id = ${filters.sourceId}` : sql``;
     const updatedCondition = updatedAfter ? sql`AND p.updated_at > ${updatedAfter}::timestamptz` : sql``;
     // slugPrefix uses the (source_id, slug) UNIQUE btree index for range scans.
     // Escape LIKE metacharacters so the user prefix is treated as a literal.
@@ -499,7 +501,7 @@ export class PostgresEngine implements BrainEngine {
     const rows = await sql`
       SELECT p.* FROM pages p
       ${tagJoin}
-      WHERE 1=1 ${typeCondition} ${tagCondition} ${updatedCondition} ${slugCondition} ${deletedCondition}
+      WHERE 1=1 ${typeCondition} ${tagCondition} ${sourceCondition} ${updatedCondition} ${slugCondition} ${deletedCondition}
       ORDER BY p.updated_at DESC LIMIT ${limit} OFFSET ${offset}
     `;
 
@@ -855,6 +857,7 @@ export class PostgresEngine implements BrainEngine {
   async upsertChunks(slug: string, chunks: ChunkInput[], opts?: { sourceId?: string }): Promise<void> {
     const sql = this.sql;
     const sourceId = opts?.sourceId;
+    assertUniqueChunkIndices(slug, chunks, opts);
 
     // Get page_id
     const pages = await sql`
@@ -961,24 +964,29 @@ export class PostgresEngine implements BrainEngine {
     return rows.map((r) => rowToChunk(r as Record<string, unknown>));
   }
 
-  async countStaleChunks(): Promise<number> {
+  async countStaleChunks(opts?: { sourceId?: string }): Promise<number> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId;
     const [row] = await sql`
       SELECT count(*)::int AS count
-      FROM content_chunks
-      WHERE embedding IS NULL
+      FROM content_chunks cc
+      JOIN pages p ON p.id = cc.page_id
+      WHERE cc.embedding IS NULL
+        ${sourceId ? sql`AND p.source_id = ${sourceId}` : sql``}
     `;
     return Number((row as { count?: number } | undefined)?.count ?? 0);
   }
 
-  async listStaleChunks(): Promise<StaleChunkRow[]> {
+  async listStaleChunks(opts?: { sourceId?: string }): Promise<StaleChunkRow[]> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId;
     const rows = await sql`
       SELECT p.source_id, p.slug, cc.chunk_index, cc.chunk_text, cc.chunk_source,
              cc.model, cc.token_count
       FROM content_chunks cc
       JOIN pages p ON p.id = cc.page_id
       WHERE cc.embedding IS NULL
+        ${sourceId ? sql`AND p.source_id = ${sourceId}` : sql``}
       ORDER BY p.id, cc.chunk_index
       LIMIT 100000
     `;

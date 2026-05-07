@@ -989,6 +989,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
     await runEmbedCore(engine, {
       slug: typeof job.data.slug === 'string' ? job.data.slug : undefined,
       slugs: Array.isArray(job.data.slugs) ? (job.data.slugs as string[]) : undefined,
+      sourceId: typeof job.data.sourceId === 'string' ? job.data.sourceId : undefined,
       all: !!job.data.all,
       stale: job.data.all ? false : (job.data.stale !== false),
       onProgress: (done, total, embedded) => {
@@ -1067,9 +1068,10 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
       ? (job.data.phases as string[]).filter(p => validPhases.has(p as any))
       : undefined;
 
+    const noPull = !!job.data.noPull;
     const report = await runCycle(engine, {
       brainDir: repoPath,
-      pull: true, // autopilot daemon opts into git pull
+      pull: !noPull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
       yieldBetweenPhases: async () => {

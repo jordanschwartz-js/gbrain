@@ -23,6 +23,7 @@ function defaultWorkers(): number {
 /** Bug 9 — surface per-file failures so callers (performFullSync) can gate state advances. */
 export interface RunImportResult {
   imported: number;
+  importedSlugs: string[];
   skipped: number;
   errors: number;
   chunksCreated: number;
@@ -295,7 +296,7 @@ export async function runImport(engine: BrainEngine, args: string[], opts: { com
     await engine.setConfig('sync.repo_path', dir);
   }
 
-  return { imported, skipped, errors, chunksCreated, failures };
+  return { imported, importedSlugs, skipped, errors, chunksCreated, failures };
 }
 
 export function collectMarkdownFiles(dir: string): string[] {

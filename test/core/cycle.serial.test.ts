@@ -19,7 +19,7 @@ let lintCalls: Array<{ target: string; fix: boolean; dryRun: boolean | undefined
 let backlinksCalls: Array<{ action: string; dir: string; dryRun: boolean | undefined }> = [];
 let syncCalls: Array<{ dryRun: boolean | undefined; noPull: boolean | undefined; noExtract: boolean | undefined; sourceId: string | undefined }> = [];
 let extractCalls: Array<{ mode: string; dir: string; slugs: string[] | undefined }> = [];
-let embedCalls: Array<{ stale: boolean | undefined; dryRun: boolean | undefined }> = [];
+let embedCalls: Array<{ stale: boolean | undefined; dryRun: boolean | undefined; sourceId: string | undefined }> = [];
 let orphansCalls: number = 0;
 
 // Mock lint
@@ -83,7 +83,7 @@ mock.module('../../src/commands/extract.ts', () => ({
 // Mock embed
 mock.module('../../src/commands/embed.ts', () => ({
   runEmbedCore: async (_engine: any, opts: any) => {
-    embedCalls.push({ stale: opts.stale, dryRun: opts.dryRun });
+    embedCalls.push({ stale: opts.stale, dryRun: opts.dryRun, sourceId: opts.sourceId });
     return {
       embedded: opts.dryRun ? 0 : 8,
       skipped: 2,
@@ -477,6 +477,15 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
     );
     await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-a' });
     expect(syncCalls.at(-1)?.sourceId).toBe('default');
+  });
+
+  test('seeded sources row → embed phase receives matching sourceId', async () => {
+    await (sharedEngine as any).db.query(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, $3)`,
+      ['default', 'default', '/tmp/brain-475-embed'],
+    );
+    await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-embed' });
+    expect(embedCalls.at(-1)?.sourceId).toBe('default');
   });
 
   test('no matching sources row → performSync receives sourceId=undefined', async () => {

@@ -129,6 +129,78 @@ describe('runEmbed --all (parallel)', () => {
     // Only the stale page triggers an embedBatch call.
     expect(totalEmbedCalls).toBe(1);
   });
+
+  test('--stale --source filters stale-count and stale-row queries to that source', async () => {
+    const countCalls: Array<{ sourceId?: string } | undefined> = [];
+    const listCalls: Array<{ sourceId?: string } | undefined> = [];
+    const getChunkCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+    const upsertCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+    const chunksBySlug = new Map<string, any[]>([
+      ['shared', [{ chunk_index: 0, chunk_text: 'scoped text', chunk_source: 'compiled_truth', embedded_at: null, token_count: 2 }]],
+    ]);
+
+    const engine = mockEngine({
+      countStaleChunks: async (opts?: { sourceId?: string }) => {
+        countCalls.push(opts);
+        return 1;
+      },
+      listStaleChunks: async (opts?: { sourceId?: string }) => {
+        listCalls.push(opts);
+        return [
+          { source_id: opts?.sourceId, slug: 'shared', chunk_index: 0, chunk_text: 'scoped text', chunk_source: 'compiled_truth', model: null, token_count: 2 },
+        ];
+      },
+      getChunks: async (slug: string, opts?: { sourceId?: string }) => {
+        getChunkCalls.push({ slug, opts });
+        return chunksBySlug.get(slug) || [];
+      },
+      upsertChunks: async (slug: string, _chunks: any[], opts?: { sourceId?: string }) => {
+        upsertCalls.push({ slug, opts });
+      },
+    });
+
+    await runEmbed(engine, ['--stale', '--source', 'source-b']);
+
+    expect(countCalls).toEqual([{ sourceId: 'source-b' }]);
+    expect(listCalls).toEqual([{ sourceId: 'source-b' }]);
+    expect(getChunkCalls).toEqual([{ slug: 'shared', opts: { sourceId: 'source-b' } }]);
+    expect(upsertCalls).toEqual([{ slug: 'shared', opts: { sourceId: 'source-b' } }]);
+  });
+
+  test('--all --source lists only pages from that source', async () => {
+    const listCalls: Array<{ sourceId?: string; limit?: number } | undefined> = [];
+    const engine = mockEngine({
+      listPages: async (filters?: { sourceId?: string; limit?: number }) => {
+        listCalls.push(filters);
+        return [{ slug: 'source-page', source_id: filters?.sourceId }];
+      },
+      getChunks: async () => [
+        { chunk_index: 0, chunk_text: 'scoped text', chunk_source: 'compiled_truth', embedded_at: null, token_count: 2 },
+      ],
+      upsertChunks: async () => {},
+    });
+
+    await runEmbed(engine, ['--all', '--source', 'source-b']);
+
+    expect(listCalls).toEqual([{ limit: 100000, sourceId: 'source-b' }]);
+  });
+});
+
+describe('embedding concurrency selection', () => {
+  test('defaults local Ollama embeddings to one worker unless overridden', async () => {
+    const { resolveEmbedConcurrency } = await import('../src/commands/embed.ts');
+
+    expect(resolveEmbedConcurrency('ollama:qwen3-embedding:4b')).toBe(1);
+
+    process.env.GBRAIN_EMBED_CONCURRENCY = '3';
+    expect(resolveEmbedConcurrency('ollama:qwen3-embedding:4b')).toBe(3);
+  });
+
+  test('keeps hosted providers at the existing default unless overridden', async () => {
+    const { resolveEmbedConcurrency } = await import('../src/commands/embed.ts');
+
+    expect(resolveEmbedConcurrency('openai:text-embedding-3-large')).toBe(20);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -230,6 +302,38 @@ describe('runEmbedCore --dry-run never calls the embedding model', () => {
     expect(result.skipped).toBe(1);
     expect(result.total_chunks).toBe(3);
     expect(result.pages_processed).toBe(1);
+  });
+
+  test('--slugs threads sourceId through page, chunk, and write calls', async () => {
+    const { runEmbedCore } = await import('../src/commands/embed.ts');
+    const getPageCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+    const getChunkCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+    const upsertCalls: Array<{ slug: string; opts?: { sourceId?: string } }> = [];
+
+    const engine = mockEngine({
+      getPage: async (slug: string, opts?: { sourceId?: string }) => {
+        getPageCalls.push({ slug, opts });
+        return opts?.sourceId === 'gstack-code'
+          ? { slug, compiled_truth: 'scoped text', timeline: '' }
+          : null;
+      },
+      getChunks: async (slug: string, opts?: { sourceId?: string }) => {
+        getChunkCalls.push({ slug, opts });
+        return opts?.sourceId === 'gstack-code'
+          ? [{ chunk_index: 0, chunk_text: 'scoped text', chunk_source: 'compiled_truth', embedded_at: null, token_count: 3 }]
+          : [];
+      },
+      upsertChunks: async (slug: string, _chunks: any[], opts?: { sourceId?: string }) => {
+        upsertCalls.push({ slug, opts });
+      },
+    });
+
+    const result = await runEmbedCore(engine, { slugs: ['shared-slug'], sourceId: 'gstack-code' });
+
+    expect(result.embedded).toBe(1);
+    expect(getPageCalls).toEqual([{ slug: 'shared-slug', opts: { sourceId: 'gstack-code' } }]);
+    expect(getChunkCalls).toEqual([{ slug: 'shared-slug', opts: { sourceId: 'gstack-code' } }]);
+    expect(upsertCalls).toEqual([{ slug: 'shared-slug', opts: { sourceId: 'gstack-code' } }]);
   });
 
   test('non-dry-run path reports accurate embedded count (regression guard)', async () => {

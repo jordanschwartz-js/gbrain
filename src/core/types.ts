@@ -55,6 +55,8 @@ export interface PageFilters {
   tag?: string;
   limit?: number;
   offset?: number;
+  /** Filter to one source in multi-source brains. Omitted means all sources. */
+  sourceId?: string;
   /** ISO date string (YYYY-MM-DD or full ISO timestamp). Filter to pages updated_at > value. */
   updated_after?: string;
   /**

@@ -258,6 +258,16 @@ describe('PGLiteEngine: Chunks', () => {
     ).rejects.toThrow('Page not found');
   });
 
+  test('upsertChunks rejects duplicate chunk indices before SQL upsert', async () => {
+    await engine.putPage('test/duplicate-chunks', testPage);
+    await expect(
+      engine.upsertChunks('test/duplicate-chunks', [
+        { chunk_index: 0, chunk_text: 'first', chunk_source: 'compiled_truth' },
+        { chunk_index: 0, chunk_text: 'duplicate', chunk_source: 'compiled_truth' },
+      ])
+    ).rejects.toThrow(/Duplicate chunk_index.*test\/duplicate-chunks.*0/);
+  });
+
   test('deleteChunks removes all chunks for page', async () => {
     await engine.putPage('test/delete-chunks', testPage);
     await engine.upsertChunks('test/delete-chunks', [
