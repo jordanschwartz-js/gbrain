@@ -107,8 +107,9 @@ export function deriveDomain(frontmatterDomain: string | null | undefined, slug:
  */
 export async function queryOrphanPages(
   engine: BrainEngine,
+  opts: { sourceId?: string } = {},
 ): Promise<{ slug: string; title: string; domain: string | null }[]> {
-  return engine.findOrphanPages();
+  return engine.findOrphanPages(opts);
 }
 
 /**
@@ -119,7 +120,7 @@ export async function queryOrphanPages(
  */
 export async function findOrphans(
   engine: BrainEngine,
-  opts: { includePseudo?: boolean } = {},
+  opts: { includePseudo?: boolean; sourceId?: string } = {},
 ): Promise<OrphanResult> {
   const includePseudo = !!opts.includePseudo;
   // The NOT EXISTS anti-join over pages × links can take seconds on 50K-page
@@ -133,10 +134,9 @@ export async function findOrphans(
   let allOrphans: { slug: string; title: string; domain: string | null }[];
   let total: number;
   try {
-    allOrphans = await engine.findOrphanPages();
-    // Count total pages in DB for the summary line
-    const stats = await engine.getStats();
-    total = stats.page_count;
+    allOrphans = await engine.findOrphanPages({ sourceId: opts.sourceId });
+    const pages = await engine.listPages({ limit: 100000, sourceId: opts.sourceId });
+    total = pages.filter(page => (page.page_kind ?? 'markdown') !== 'code' && page.type !== 'code').length;
   } finally {
     stopHb();
     progress.finish();
@@ -207,6 +207,8 @@ export async function runOrphans(engine: BrainEngine, args: string[]) {
   const json = args.includes('--json');
   const count = args.includes('--count');
   const includePseudo = args.includes('--include-pseudo');
+  const allSources = args.includes('--all');
+  const explicitSource = args.find((a, i) => args[i - 1] === '--source');
 
   if (args.includes('--help') || args.includes('-h')) {
     console.log(`Usage: gbrain orphans [options]
@@ -216,6 +218,8 @@ Find pages with no inbound wikilinks.
 Options:
   --json            Output as JSON (for agent consumption)
   --count           Output just the number of orphans
+  --source <id>     Limit to one registered source
+  --all             Scan all sources instead of the resolved current source
   --include-pseudo  Include auto-generated and pseudo pages in results
   --help, -h        Show this help
 
@@ -225,7 +229,13 @@ Summary line: N orphans out of M linkable pages (K total; K-M excluded)
     return;
   }
 
-  const result = await findOrphans(engine, { includePseudo });
+  let sourceId: string | undefined;
+  if (!allSources) {
+    const { resolveSourceId } = await import('../core/source-resolver.ts');
+    sourceId = await resolveSourceId(engine, explicitSource ?? null);
+  }
+
+  const result = await findOrphans(engine, { includePseudo, sourceId });
 
   if (count) {
     console.log(String(result.total_orphans));

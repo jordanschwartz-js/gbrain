@@ -280,7 +280,7 @@ export interface BrainEngine {
    * The caller filters pseudo-pages + derives display domain.
    * Used by `gbrain orphans` and `runCycle`'s orphan sweep phase.
    */
-  findOrphanPages(): Promise<Array<{ slug: string; title: string; domain: string | null }>>;
+  findOrphanPages(opts?: { sourceId?: string }): Promise<Array<{ slug: string; title: string; domain: string | null }>>;
 
   // Tags
   addTag(slug: string, tag: string, opts?: { sourceId?: string }): Promise<void>;

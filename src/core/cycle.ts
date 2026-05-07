@@ -722,10 +722,10 @@ async function runPhasePurge(engine: BrainEngine, dryRun: boolean): Promise<Phas
  *  to avoid a static import (purge phase is only loaded in the autopilot path). */
 const SOFT_DELETE_TTL_HOURS_FOR_PURGE = 72;
 
-async function runPhaseOrphans(engine: BrainEngine): Promise<PhaseResult> {
+async function runPhaseOrphans(engine: BrainEngine, sourceId?: string): Promise<PhaseResult> {
   try {
     const { findOrphans } = await import('../commands/orphans.ts');
-    const result = await findOrphans(engine);
+    const result = await findOrphans(engine, { sourceId });
     const count = result.total_orphans;
     return {
       phase: 'orphans',
@@ -992,7 +992,8 @@ export async function runCycle(
         });
       } else {
         progress.start('cycle.orphans');
-        const { result, duration_ms } = await timePhase(() => runPhaseOrphans(engine));
+        cycleSourceId = cycleSourceId ?? await resolveSourceForDir(engine, opts.brainDir);
+        const { result, duration_ms } = await timePhase(() => runPhaseOrphans(engine, cycleSourceId));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();

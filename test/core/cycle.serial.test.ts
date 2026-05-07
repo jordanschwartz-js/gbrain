@@ -20,7 +20,7 @@ let backlinksCalls: Array<{ action: string; dir: string; dryRun: boolean | undef
 let syncCalls: Array<{ dryRun: boolean | undefined; noPull: boolean | undefined; noExtract: boolean | undefined; sourceId: string | undefined }> = [];
 let extractCalls: Array<{ mode: string; dir: string; slugs: string[] | undefined }> = [];
 let embedCalls: Array<{ stale: boolean | undefined; dryRun: boolean | undefined; sourceId: string | undefined }> = [];
-let orphansCalls: number = 0;
+let orphansCalls: Array<{ sourceId: string | undefined }> = [];
 
 // Mock lint
 mock.module('../../src/commands/lint.ts', () => ({
@@ -98,8 +98,8 @@ mock.module('../../src/commands/embed.ts', () => ({
 
 // Mock orphans
 mock.module('../../src/commands/orphans.ts', () => ({
-  findOrphans: async () => {
-    orphansCalls++;
+  findOrphans: async (_engine: any, opts: any = {}) => {
+    orphansCalls.push({ sourceId: opts.sourceId });
     return {
       orphans: [],
       total_orphans: 1,
@@ -147,7 +147,7 @@ beforeEach(() => {
   syncCalls = [];
   extractCalls = [];
   embedCalls = [];
-  orphansCalls = 0;
+  orphansCalls = [];
 });
 
 // ─── dryRun propagation (regression guards) ────────────────────────
@@ -206,7 +206,7 @@ describe('runCycle — phase selection', () => {
 
   test('--phase orphans only runs orphans', async () => {
     await runCycle(sharedEngine,{ brainDir: '/tmp/brain', phases: ['orphans'] });
-    expect(orphansCalls).toBe(1);
+    expect(orphansCalls).toEqual([{ sourceId: undefined }]);
     expect(syncCalls.length).toBe(0);
   });
 });
@@ -486,6 +486,15 @@ describe('runCycle — sourceId resolution (regression #475)', () => {
     );
     await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-embed' });
     expect(embedCalls.at(-1)?.sourceId).toBe('default');
+  });
+
+  test('seeded sources row → orphans phase receives matching sourceId', async () => {
+    await (sharedEngine as any).db.query(
+      `INSERT INTO sources (id, name, local_path) VALUES ($1, $2, $3)`,
+      ['default', 'default', '/tmp/brain-475-orphans'],
+    );
+    await runCycle(sharedEngine, { brainDir: '/tmp/brain-475-orphans' });
+    expect(orphansCalls.at(-1)?.sourceId).toBe('default');
   });
 
   test('no matching sources row → performSync receives sourceId=undefined', async () => {

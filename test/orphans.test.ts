@@ -283,6 +283,53 @@ describe('findOrphans (engine-injected)', () => {
     expect(slugs).toContain('topic/standalone');
   });
 
+  test('excludes code-index pages from wiki orphan reporting', async () => {
+    await engine.putPage('src-app-ts', {
+      type: 'code',
+      page_kind: 'code',
+      title: 'src/app.ts',
+      compiled_truth: 'export const app = true;',
+      timeline: '',
+    });
+    await engine.putPage('concepts/real-topic', {
+      type: 'concept',
+      title: 'Real Topic',
+      compiled_truth: 'A normal markdown page.',
+      timeline: '',
+    });
+
+    const result = await findOrphans(engine);
+
+    expect(result.orphans.map(o => o.slug)).toEqual(['concepts/real-topic']);
+    expect(result.total_pages).toBe(1);
+  });
+
+  test('sourceId scopes orphan reporting to one source', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name) VALUES ('alt', 'alt') ON CONFLICT (id) DO NOTHING`,
+    );
+    await engine.putPage('shared/page', {
+      type: 'concept',
+      title: 'Default Shared Page',
+      compiled_truth: 'Default source content.',
+      timeline: '',
+      source_id: 'default',
+    });
+    await engine.putPage('shared/page', {
+      type: 'concept',
+      title: 'Alt Shared Page',
+      compiled_truth: 'Alt source content.',
+      timeline: '',
+      source_id: 'alt',
+    });
+
+    const result = await findOrphans(engine, { sourceId: 'alt' });
+
+    expect(result.orphans.map(o => o.title)).toEqual(['Alt Shared Page']);
+    expect(result.total_orphans).toBe(1);
+    expect(result.total_pages).toBe(1);
+  });
+
   test('zero pages: empty result (no crash on empty brain)', async () => {
     const result = await findOrphans(engine);
     expect(result.orphans).toEqual([]);

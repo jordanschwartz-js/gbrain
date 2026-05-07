@@ -1343,15 +1343,20 @@ export class PostgresEngine implements BrainEngine {
     return result;
   }
 
-  async findOrphanPages(): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
+  async findOrphanPages(opts?: { sourceId?: string }): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
     const sql = this.sql;
+    const sourceId = opts?.sourceId;
     const rows = await sql`
       SELECT
         p.slug,
         COALESCE(p.title, p.slug) AS title,
         p.frontmatter->>'domain' AS domain
       FROM pages p
-      WHERE NOT EXISTS (
+      WHERE p.deleted_at IS NULL
+        AND COALESCE(p.page_kind, 'markdown') <> 'code'
+        AND p.type <> 'code'
+        ${sourceId ? sql`AND p.source_id = ${sourceId}` : sql``}
+        AND NOT EXISTS (
         SELECT 1 FROM links l WHERE l.to_page_id = p.id
       )
       ORDER BY p.slug

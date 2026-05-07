@@ -1296,17 +1296,23 @@ export class PGLiteEngine implements BrainEngine {
     return result;
   }
 
-  async findOrphanPages(): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
+  async findOrphanPages(opts?: { sourceId?: string }): Promise<Array<{ slug: string; title: string; domain: string | null }>> {
+    const sourceId = opts?.sourceId;
     const { rows } = await this.db.query(
       `SELECT
          p.slug,
          COALESCE(p.title, p.slug) AS title,
          p.frontmatter->>'domain' AS domain
        FROM pages p
-       WHERE NOT EXISTS (
+       WHERE p.deleted_at IS NULL
+         AND COALESCE(p.page_kind, 'markdown') <> 'code'
+         AND p.type <> 'code'
+         ${sourceId ? 'AND p.source_id = $1' : ''}
+         AND NOT EXISTS (
          SELECT 1 FROM links l WHERE l.to_page_id = p.id
        )
-       ORDER BY p.slug`
+       ORDER BY p.slug`,
+      sourceId ? [sourceId] : [],
     );
     return rows as Array<{ slug: string; title: string; domain: string | null }>;
   }
