@@ -2,7 +2,7 @@ import { readFileSync, statSync, lstatSync } from 'fs';
 import { basename } from 'path';
 import { createHash } from 'crypto';
 import { marked } from 'marked';
-import type { BrainEngine } from './engine.ts';
+import type { BrainEngine, LinkBatchInput } from './engine.ts';
 import { parseMarkdown } from './markdown.ts';
 import { chunkText } from './chunkers/recursive.ts';
 import { chunkCodeText, chunkCodeTextFull, detectCodeLanguage, CHUNKER_VERSION } from './chunkers/code.ts';
@@ -293,29 +293,40 @@ export async function importFromContent(
 
     // v0.19.0 E1 — doc↔impl linking: if this markdown page cites code paths
     // (e.g. 'src/core/sync.ts:42'), create bidirectional edges to the code
-    // page. addLink throws when either endpoint is missing (master tightened
-    // this in v0.18.x), so we wrap each pair in try/catch — guides imported
-    // before their code repo syncs are common, and the missing edges land
-    // later via `gbrain reconcile-links` (Layer 8 D3, v0.21.0).
+    // page. Batch insertion is source-aware and drops missing endpoints, so
+    // guides imported before their code repo syncs are picked up later by
+    // `gbrain reconcile-links` without poisoning the import transaction.
     const codeRefs = extractCodeRefs(parsed.compiled_truth + '\n' + (parsed.timeline || ''));
+    const codeRefLinks: LinkBatchInput[] = [];
+    const linkSourceId = opts.sourceId || 'default';
     for (const ref of codeRefs) {
       const codeSlug = slugifyCodePath(ref.path);
-      // Forward: markdown guide → code page (this guide documents that code)
-      try {
-        await tx.addLink(
-          slug, codeSlug,
-          ref.line ? `cited at ${ref.path}:${ref.line}` : ref.path,
-          'documents', 'markdown', slug, 'compiled_truth',
-        );
-      } catch { /* code page not yet imported — reconcile-links will catch it */ }
-      // Reverse: code page → markdown guide (this code is documented by the guide)
-      try {
-        await tx.addLink(
-          codeSlug, slug,
-          ref.path, 'documented_by', 'markdown', slug, 'compiled_truth',
-        );
-      } catch { /* same reason — silent skip */ }
+      codeRefLinks.push({
+        from_slug: slug,
+        to_slug: codeSlug,
+        context: ref.line ? `cited at ${ref.path}:${ref.line}` : ref.path,
+        link_type: 'documents',
+        link_source: 'markdown',
+        origin_slug: slug,
+        origin_field: 'compiled_truth',
+        from_source_id: linkSourceId,
+        to_source_id: linkSourceId,
+        origin_source_id: linkSourceId,
+      });
+      codeRefLinks.push({
+        from_slug: codeSlug,
+        to_slug: slug,
+        context: ref.path,
+        link_type: 'documented_by',
+        link_source: 'markdown',
+        origin_slug: slug,
+        origin_field: 'compiled_truth',
+        from_source_id: linkSourceId,
+        to_source_id: linkSourceId,
+        origin_source_id: linkSourceId,
+      });
     }
+    await tx.addLinksBatch(codeRefLinks);
   });
 
   return { slug, status: 'imported', chunks: chunks.length, parsedPage };
