@@ -99,12 +99,12 @@ describe('gbrain frontmatter CLI (B4)', () => {
     mkdirSync(join(tmp, 'subdir'), { recursive: true });
     writeFileSync(join(tmp, 'a.md'), `${fence}\ntype: concept\ntitle: A\n${fence}\n\nbody`);
     writeFileSync(join(tmp, 'subdir', 'b.md'), `${fence}\ntype: concept\ntitle: B\n${fence}\n\nbody`);
-    writeFileSync(join(tmp, 'README.md'), 'meta');  // skipped by isSyncable
+    writeFileSync(join(tmp, 'README.md'), 'meta');
     writeFileSync(join(tmp, 'image.png'), 'not markdown');
     const { stdout } = runCli(['validate', tmp, '--json']);
     const env = JSON.parse(stdout);
-    // Two .md files: a.md, subdir/b.md. README.md is filtered by isSyncable.
-    expect(env.total_files).toBe(2);
+    // Three .md files: a.md, subdir/b.md, and README.md.
+    expect(env.total_files).toBe(3);
   });
 
   test('validate missing path errors clearly', () => {

@@ -39,12 +39,11 @@ export type LinkResolutionType = 'qualified' | 'unqualified';
 
 /**
  * Directory prefix whitelist. These are the top-level slug dirs the extractor
- * recognizes as entity references. Upstream canonical + our extensions:
- *   - Gbrain canonical: people, companies, meetings, concepts, deal, civic, project, source, media, yc, projects
- *   - Our domain extensions: tech, finance, personal, openclaw (domain-organized wikis)
- *   - Our entity prefix: entities (we kept some legacy entities/projects/ pages)
+ * recognizes as graph references. It includes entity directories plus durable
+ * brain-hub directories so wiki links between local system, idea, source,
+ * project, and index pages populate the graph.
  */
-const DIR_PATTERN = '(?:people|companies|meetings|concepts|deal|civic|project|projects|source|media|yc|tech|finance|personal|openclaw|entities)';
+const DIR_PATTERN = '(?:archive|civic|companies|concepts|deal|deals|decisions|docs|dream-cycle-summaries|hiring|household|ideas|inbox|media|meetings|org|people|personal|programs|project|projects|prompts|reports|source|sources|systems|tech|finance|writing|yc|openclaw|entities)';
 
 /**
  * Match `[Name](path)` markdown links pointing to entity directories.

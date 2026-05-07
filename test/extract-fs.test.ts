@@ -129,6 +129,21 @@ describe('gbrain extract links --source fs', () => {
     const links = await engine.getLinks('companies/acme');
     expect(links.length).toBe(0);
   });
+
+  test('extracts links to README and index hub pages using path-derived slugs', async () => {
+    await engine.putPage('index', { type: 'concept', title: 'Index', compiled_truth: '', timeline: '' });
+    await engine.putPage('systems/readme', { type: 'concept', title: 'Systems', compiled_truth: '', timeline: '' });
+    await engine.putPage('systems/openclaw-stack/index', { type: 'concept', title: 'OpenClaw Stack', compiled_truth: '', timeline: '' });
+
+    writeFile('index.md', '---\ntitle: Index\n---\n\n[[systems/readme]]\n');
+    writeFile('systems/README.md', '---\ntitle: Systems\n---\n\n[[systems/openclaw-stack/index]]\n');
+    writeFile('systems/openclaw-stack/index.md', '---\ntitle: OpenClaw Stack\n---\n');
+
+    await runExtract(engine, ['links', '--dir', brainDir]);
+
+    expect((await engine.getBacklinks('systems/readme')).map(l => l.from_slug)).toContain('index');
+    expect((await engine.getBacklinks('systems/openclaw-stack/index')).map(l => l.from_slug)).toContain('systems/readme');
+  });
 });
 
 describe('gbrain extract timeline --source fs', () => {

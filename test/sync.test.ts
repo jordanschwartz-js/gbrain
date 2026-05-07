@@ -86,12 +86,12 @@ describe('isSyncable', () => {
     expect(isSyncable('dir/.raw/notes.md')).toBe(false);
   });
 
-  test('rejects skip-list basenames', () => {
-    expect(isSyncable('schema.md')).toBe(false);
-    expect(isSyncable('index.md')).toBe(false);
-    expect(isSyncable('log.md')).toBe(false);
-    expect(isSyncable('README.md')).toBe(false);
-    expect(isSyncable('people/README.md')).toBe(false);
+  test('accepts markdown hub basenames', () => {
+    expect(isSyncable('schema.md')).toBe(true);
+    expect(isSyncable('index.md')).toBe(true);
+    expect(isSyncable('log.md')).toBe(true);
+    expect(isSyncable('README.md')).toBe(true);
+    expect(isSyncable('people/README.md')).toBe(true);
   });
 
   test('rejects ops/ directory', () => {

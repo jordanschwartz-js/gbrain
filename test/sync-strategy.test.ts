@@ -60,8 +60,8 @@ describe('isSyncable with strategy', () => {
   test('existing skip rules apply across all strategies', () => {
     // Hidden directories are always skipped
     expect(isSyncable('.git/config.js', { strategy: 'code' })).toBe(false);
-    // README.md is skipped under markdown
-    expect(isSyncable('README.md', { strategy: 'markdown' })).toBe(false);
+    // README.md is a normal markdown page under markdown strategy
+    expect(isSyncable('README.md', { strategy: 'markdown' })).toBe(true);
     // ops/ directory always skipped
     expect(isSyncable('ops/migrate.py', { strategy: 'code' })).toBe(false);
     // .raw/ sidecar always skipped

@@ -28,6 +28,7 @@ import {
 } from '../core/link-extraction.ts';
 import { createProgress } from '../core/progress.ts';
 import { getCliOptions, cliOptsToProgressOptions } from '../core/cli-options.ts';
+import { slugifyPath } from '../core/sync.ts';
 
 // Batch size for addLinksBatch / addTimelineEntriesBatch.
 // Postgres bind-parameter limit is 65535. Links use 4 cols/row → 16K hard ceiling;
@@ -136,13 +137,15 @@ export function resolveSlug(fileDir: string, relTarget: string, allSlugs: Set<st
   const targetNoExt = relTarget.endsWith('.md') ? relTarget.slice(0, -3) : relTarget;
 
   const s1 = join(fileDir, targetNoExt);
-  if (allSlugs.has(s1)) return s1;
+  const normalizedS1 = slugifyPath(s1);
+  if (allSlugs.has(normalizedS1)) return normalizedS1;
 
   const parts = fileDir.split('/').filter(Boolean);
   for (let strip = 1; strip <= parts.length; strip++) {
     const ancestor = parts.slice(0, parts.length - strip).join('/');
     const candidate = ancestor ? join(ancestor, targetNoExt) : targetNoExt;
-    if (allSlugs.has(candidate)) return candidate;
+    const normalizedCandidate = slugifyPath(candidate);
+    if (allSlugs.has(normalizedCandidate)) return normalizedCandidate;
   }
 
   return null;
@@ -197,8 +200,8 @@ export async function extractLinksFromFile(
   opts?: { includeFrontmatter?: boolean },
 ): Promise<ExtractedLink[]> {
   const links: ExtractedLink[] = [];
-  const slug = relPath.replace('.md', '');
-  const fileDir = dirname(relPath);
+  const slug = slugifyPath(relPath);
+  const fileDir = dirname(slug);
   const fm = parseFrontmatterFromContent(content, relPath);
 
   for (const { name, relTarget } of extractMarkdownLinks(content)) {
@@ -453,7 +456,8 @@ async function extractForSlugs(
 ): Promise<{ links_created: number; timeline_created: number; pages: number }> {
   // Build the full slug set for link resolution (fast: just readdir, no file reads)
   const allFiles = walkMarkdownFiles(brainDir);
-  const allSlugs = new Set(allFiles.map(f => f.relPath.replace('.md', '')));
+  const slugToRelPath = new Map(allFiles.map(f => [slugifyPath(f.relPath), f.relPath]));
+  const allSlugs = new Set(slugToRelPath.keys());
 
   const doLinks = mode === 'links' || mode === 'all';
   const doTimeline = mode === 'timeline' || mode === 'all';
@@ -493,7 +497,7 @@ async function extractForSlugs(
   }
 
   for (const slug of slugs) {
-    const relPath = slug + '.md';
+    const relPath = slugToRelPath.get(slug) ?? slug + '.md';
     const fullPath = join(brainDir, relPath);
 
     try {
@@ -549,7 +553,7 @@ async function extractLinksFromDir(
   engine: BrainEngine, brainDir: string, dryRun: boolean, jsonMode: boolean,
 ): Promise<{ created: number; pages: number }> {
   const files = walkMarkdownFiles(brainDir);
-  const allSlugs = new Set(files.map(f => f.relPath.replace('.md', '')));
+  const allSlugs = new Set(files.map(f => slugifyPath(f.relPath)));
 
   // Progress stream on stderr (separate from the action-events --json writes
   // to stdout, which tests grep for). Rate-gated; respects global --quiet /
