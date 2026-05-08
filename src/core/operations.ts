@@ -630,55 +630,63 @@ async function runAutoLink(
 
 const delete_page: Operation = {
   name: 'delete_page',
-  description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed.',
+  description: 'Soft-delete a page. The row is hidden from search and from get_page/list_pages, but is recoverable via restore_page within 72h. The autopilot purge phase hard-deletes after the recovery window. Pass include_deleted: true to get_page to verify the soft-delete landed. Pass source_id when duplicate slugs exist across sources.',
   params: {
     slug: { type: 'string', required: true },
+    source_id: { type: 'string', description: 'Optional registered source id for duplicate slugs across sources.' },
   },
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
-    if (ctx.dryRun) return { dry_run: true, action: 'soft_delete_page', slug };
+    const sourceId = p.source_id as string | undefined;
+    const sourceOpts = sourceId ? { sourceId } : undefined;
+    const sourceResult = sourceId ? { source_id: sourceId } : {};
+    if (ctx.dryRun) return { dry_run: true, action: 'soft_delete_page', slug, ...sourceResult };
     // v0.26.5: rewired from hard-delete to soft-delete. The hard-delete primitive
     // (engine.deletePage) is now reserved for purgeDeletedPages and explicit
     // tests. softDeletePage returns null when the slug is unknown OR already
     // soft-deleted (idempotent-as-null) — preserve that as a clean no-op shape.
-    const result = await ctx.engine.softDeletePage(slug);
+    const result = await ctx.engine.softDeletePage(slug, sourceOpts);
     if (result === null) {
       // Distinguish "not found" from "already soft-deleted" so the agent gets a
       // clear signal. Probe once with include_deleted to disambiguate.
-      const existing = await ctx.engine.getPage(slug, { includeDeleted: true });
+      const existing = await ctx.engine.getPage(slug, { ...sourceOpts, includeDeleted: true });
       if (!existing) {
         throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug.');
       }
-      return { status: 'already_soft_deleted', slug, deleted_at: existing.deleted_at };
+      return { status: 'already_soft_deleted', slug, ...sourceResult, deleted_at: existing.deleted_at };
     }
-    return { status: 'soft_deleted', slug, recoverable_until: 'now + 72h via restore_page' };
+    return { status: 'soft_deleted', slug, ...sourceResult, recoverable_until: 'now + 72h via restore_page' };
   },
   cliHints: { name: 'delete', positional: ['slug'] },
 };
 
 const restore_page: Operation = {
   name: 'restore_page',
-  description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag.',
+  description: 'v0.26.5 — restore a soft-deleted page (clear deleted_at). Returns success only if the page was actually soft-deleted. After this op, the page reappears in search and in get_page/list_pages without the include_deleted flag. Pass source_id when duplicate slugs exist across sources.',
   params: {
     slug: { type: 'string', required: true },
+    source_id: { type: 'string', description: 'Optional registered source id for duplicate slugs across sources.' },
   },
   mutating: true,
   scope: 'write',
   handler: async (ctx, p) => {
     const slug = p.slug as string;
-    if (ctx.dryRun) return { dry_run: true, action: 'restore_page', slug };
-    const ok = await ctx.engine.restorePage(slug);
+    const sourceId = p.source_id as string | undefined;
+    const sourceOpts = sourceId ? { sourceId } : undefined;
+    const sourceResult = sourceId ? { source_id: sourceId } : {};
+    if (ctx.dryRun) return { dry_run: true, action: 'restore_page', slug, ...sourceResult };
+    const ok = await ctx.engine.restorePage(slug, sourceOpts);
     if (!ok) {
       // Distinguish "not found" from "already active" (idempotent-as-false).
-      const existing = await ctx.engine.getPage(slug, { includeDeleted: true });
+      const existing = await ctx.engine.getPage(slug, { ...sourceOpts, includeDeleted: true });
       if (!existing) {
         throw new OperationError('page_not_found', `Page not found: ${slug}`, 'Check the slug.');
       }
-      return { status: 'already_active', slug };
+      return { status: 'already_active', slug, ...sourceResult };
     }
-    return { status: 'restored', slug };
+    return { status: 'restored', slug, ...sourceResult };
   },
   cliHints: { name: 'restore', positional: ['slug'] },
 };
