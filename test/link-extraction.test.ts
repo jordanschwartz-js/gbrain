@@ -60,8 +60,8 @@ describe('extractEntityRefs', () => {
     expect(extractEntityRefs('[Alice(people/alice)')).toEqual([]);
   });
 
-  test('skips non-entity dirs (notes/, ideas/ stay if added later but are accepted now)', () => {
-    // Current regex targets entity dirs explicitly. Notes/ shouldn't match.
+  test('skips unknown dirs', () => {
+    // Notes/ is not a recognized graph directory.
     const refs = extractEntityRefs('See [random](notes/random).');
     expect(refs).toEqual([]);
   });
@@ -70,6 +70,11 @@ describe('extractEntityRefs', () => {
     const refs = extractEntityRefs('See [Standup](meetings/2026-01-15-standup).');
     expect(refs.length).toBe(1);
     expect(refs[0].dir).toBe('meetings');
+  });
+
+  test('extracts explicit wikilinks to durable hub directories', () => {
+    const refs = extractEntityRefs('See [[systems/openclaw-stack/index]] and [[ideas/readme|Ideas]].');
+    expect(refs.map(r => r.slug)).toEqual(['systems/openclaw-stack/index', 'ideas/readme']);
   });
 });
 
@@ -126,6 +131,17 @@ describe('extractPageLinks', () => {
     );
     const acme = candidates.find(c => c.targetSlug === 'companies/acme');
     expect(acme).toBeDefined();
+  });
+
+  test('does not treat bare durable-hub paths as graph links without explicit markdown syntax', async () => {
+    const { candidates } = await extractPageLinks(
+      'systems/x',
+      'See docs/guides/minions-shell-jobs.md#errors, reports/q1-2026, and systems/openclaw-stack/index for context.',
+      {},
+      'concept',
+      nullResolver,
+    );
+    expect(candidates.map(c => c.targetSlug)).toEqual([]);
   });
 
   test('returns empty when no refs found', async () => {
@@ -790,4 +806,3 @@ describe("v0.18.0 migration v22 — links_resolution_type", () => {
     expect(v22!.sql).toContain("unqualified");
   });
 });
-
