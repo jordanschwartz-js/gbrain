@@ -504,6 +504,13 @@ export class PostgresEngine implements BrainEngine {
       params.push(symbolKind);
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     params.push(innerLimit);
     const innerLimitParam = `$${params.length}`;
     params.push(limit);
@@ -532,6 +539,7 @@ export class PostgresEngine implements BrainEngine {
           ${detailLow ? `AND cc.chunk_source = 'compiled_truth'` : ''}
           ${languageClause}
           ${symbolKindClause}
+          ${sourceClause}
           ${hardExcludeClause}
           ${visibilityClause}
         ORDER BY score DESC
@@ -613,6 +621,13 @@ export class PostgresEngine implements BrainEngine {
       params.push(symbolKind);
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     params.push(limit);
     const limitParam = `$${params.length}`;
     params.push(offset);
@@ -636,6 +651,7 @@ export class PostgresEngine implements BrainEngine {
         ${detailLow ? `AND cc.chunk_source = 'compiled_truth'` : ''}
         ${languageClause}
         ${symbolKindClause}
+        ${sourceClause}
         ${hardExcludeClause}
         ${visibilityClause}
       ORDER BY score DESC
@@ -701,6 +717,13 @@ export class PostgresEngine implements BrainEngine {
       params.push(symbolKind);
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     params.push(innerLimit);
     const innerLimitParam = `$${params.length}`;
     params.push(limit);
@@ -729,6 +752,7 @@ export class PostgresEngine implements BrainEngine {
           ${excludeSlugsClause}
           ${languageClause}
           ${symbolKindClause}
+          ${sourceClause}
           ${hardExcludeClause}
           ${visibilityClause}
         ORDER BY cc.embedding <=> $1::vector

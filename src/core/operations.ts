@@ -736,6 +736,7 @@ const search: Operation = {
     query: { type: 'string', required: true },
     limit: { type: 'number', description: 'Max results (default 20)' },
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
+    source: { type: 'string', description: 'Source id to search; omit for federated sources, use __all__ for all non-archived sources' },
   },
   handler: async (ctx, p) => {
     const startedAt = Date.now();
@@ -743,6 +744,7 @@ const search: Operation = {
     const raw = await ctx.engine.searchKeyword(queryText, {
       limit: (p.limit as number) || 20,
       offset: (p.offset as number) || 0,
+      sourceId: (p.source as string) || undefined,
     });
     const results = dedupResults(raw);
     const latency_ms = Date.now() - startedAt;
@@ -784,6 +786,7 @@ const query: Operation = {
     offset: { type: 'number', description: 'Skip first N results (for pagination)' },
     expand: { type: 'boolean', description: 'Enable multi-query expansion (default: true)' },
     detail: { type: 'string', description: 'Result detail level: low (compiled truth only), medium (default, all with dedup), high (all chunks)' },
+    source: { type: 'string', description: 'Source id to search; omit for federated sources, use __all__ for all non-archived sources' },
     // v0.20.0 Cathedral II Layer 10 C1/C2: language + symbol-kind filters.
     lang: { type: 'string', description: 'Filter to chunks where content_chunks.language matches (e.g., typescript, python, ruby)' },
     symbol_kind: { type: 'string', description: 'Filter to chunks where content_chunks.symbol_type matches (e.g., function, class, method, type, interface)' },
@@ -810,6 +813,7 @@ const query: Operation = {
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
+      sourceId: (p.source as string) || undefined,
       walkDepth: typeof p.walk_depth === 'number' ? (p.walk_depth as number) : undefined,
       onMeta: (m) => { capturedMeta = m; },
     });

@@ -556,6 +556,12 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.symbolKind);
       extraFilter += ` AND cc.symbol_type = $${params.length}`;
     }
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
 
     // v0.26.5: visibility filter (soft-deleted + archived-source).
     const visibilityClause = buildVisibilityClause('p', 's');
@@ -628,6 +634,12 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.symbolKind);
       extraFilter += ` AND cc.symbol_type = $${params.length}`;
     }
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
 
     // v0.26.5: visibility filter for the chunk-grain anchor primitive.
     const visibilityClause = buildVisibilityClause('p', 's');
@@ -687,6 +699,12 @@ export class PGLiteEngine implements BrainEngine {
     if (opts?.symbolKind) {
       params.push(opts.symbolKind);
       extraFilter += ` AND cc.symbol_type = $${params.length}`;
+    }
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
     }
 
     // v0.26.5: visibility filter applied in the inner CTE so HNSW sees the
