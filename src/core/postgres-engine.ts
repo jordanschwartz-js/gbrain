@@ -988,6 +988,13 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
@@ -1141,6 +1148,13 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
@@ -1263,6 +1277,13 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
+    let sourceClause = '';
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
