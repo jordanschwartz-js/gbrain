@@ -775,6 +775,12 @@ export class PGLiteEngine implements BrainEngine {
     // Reads against COALESCE(effective_date, updated_at) so date filtering
     // matches user intent (a meeting was on its event_date, not when it
     // got reimported). Same param shape as Postgres engine.
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     if (opts?.afterDate) {
       params.push(opts.afterDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) > $${params.length}::timestamptz`;
@@ -993,6 +999,12 @@ export class PGLiteEngine implements BrainEngine {
       extraFilter += ` AND cc.symbol_type = $${params.length}`;
     }
     // v0.29.1 since/until parity (codex pass-1 #10).
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     if (opts?.afterDate) {
       params.push(opts.afterDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) > $${params.length}::timestamptz`;
@@ -1063,6 +1075,12 @@ export class PGLiteEngine implements BrainEngine {
     // v0.29.1 since/until parity (codex pass-1 #10). Filter applied INSIDE
     // the inner CTE so HNSW's candidate pool already excludes out-of-range
     // pages — preserves pagination contract.
+    if (opts?.sourceId && opts.sourceId !== '__all__') {
+      params.push(opts.sourceId);
+      extraFilter += ` AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      extraFilter += ` AND COALESCE(s.config->>'federated', 'false') = 'true'`;
+    }
     if (opts?.afterDate) {
       params.push(opts.afterDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) > $${params.length}::timestamptz`;
