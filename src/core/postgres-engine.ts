@@ -203,12 +203,12 @@ export class PostgresEngine implements BrainEngine {
 
     // Resolve the embedding dim/model from the gateway (v0.14+).
     // Falls back to v0.13 defaults (1536d + text-embedding-3-large) when gateway isn't configured yet.
-    let dims = 1536;
-    let model = 'text-embedding-3-large';
+    let dims = this._savedConfig?.embedding_dimensions ?? 1536;
+    let model = this._savedConfig?.embedding_model?.split(':').slice(1).join(':') || 'text-embedding-3-large';
     try {
       const gw = await import('./ai/gateway.ts');
-      dims = gw.getEmbeddingDimensions();
-      model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
+      if (!this._savedConfig?.embedding_dimensions) dims = gw.getEmbeddingDimensions();
+      if (!this._savedConfig?.embedding_model) model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
     } catch { /* gateway not yet configured — use defaults */ }
 
     const sqlText = getPostgresSchema(dims, model);

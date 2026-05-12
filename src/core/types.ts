@@ -801,6 +801,8 @@ export interface EngineConfig {
   database_url?: string;
   database_path?: string;
   engine?: 'postgres' | 'pglite';
+  embedding_dimensions?: number;
+  embedding_model?: string;
 }
 
 // Errors
