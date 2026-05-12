@@ -335,6 +335,8 @@ export function toEngineConfig(config: GBrainConfig): EngineConfig {
     engine: config.engine,
     database_url: config.database_url,
     database_path: config.database_path,
+    embedding_dimensions: config.embedding_dimensions,
+    embedding_model: config.embedding_model,
   };
 }
 

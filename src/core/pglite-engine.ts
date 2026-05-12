@@ -128,6 +128,7 @@ export class PGLiteEngine implements BrainEngine {
   readonly kind = 'pglite' as const;
   private _db: PGLiteDB | null = null;
   private _lock: LockHandle | null = null;
+  private _savedConfig: EngineConfig | null = null;
   // Tier 3: when GBRAIN_PGLITE_SNAPSHOT loaded a post-initSchema state into
   // PGlite.create(loadDataDir), initSchema is a no-op (schema is already
   // present + migrations already applied). Saves ~1-3s per fresh test PGLite.
@@ -140,6 +141,7 @@ export class PGLiteEngine implements BrainEngine {
 
   // Lifecycle
   async connect(config: EngineConfig): Promise<void> {
+    this._savedConfig = config;
     const dataDir = config.database_path || undefined; // undefined = in-memory
 
     // Acquire file lock to prevent concurrent PGLite access (crashes with Aborted())
@@ -216,12 +218,12 @@ export class PGLiteEngine implements BrainEngine {
     await this.applyForwardReferenceBootstrap();
 
     // Resolve embedding dim/model from gateway (v0.14+). Defaults preserve v0.13.
-    let dims = 1536;
-    let model = 'text-embedding-3-large';
+    let dims = this._savedConfig?.embedding_dimensions ?? 1536;
+    let model = this._savedConfig?.embedding_model?.split(':').slice(1).join(':') || 'text-embedding-3-large';
     try {
       const gw = await import('./ai/gateway.ts');
-      dims = gw.getEmbeddingDimensions();
-      model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
+      if (!this._savedConfig?.embedding_dimensions) dims = gw.getEmbeddingDimensions();
+      if (!this._savedConfig?.embedding_model) model = gw.getEmbeddingModel().split(':').slice(1).join(':') || model;
     } catch { /* gateway not configured — use defaults */ }
 
     await this.db.exec(getPGLiteSchema(dims, model));
