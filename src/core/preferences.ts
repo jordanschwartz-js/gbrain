@@ -26,11 +26,9 @@ function home(): string {
 }
 
 /**
- * GBRAIN_HOME-aware override for the .gbrain directory. When the env var
- * is set, this returns it directly (so the directory is GBRAIN_HOME itself,
- * matching the convention `src/core/config.ts:gbrainPath` enforces).
- * When unset, falls back to `<home>/.gbrain` so legacy callers and the
- * doctor's filesystem-only checks keep working.
+ * GBRAIN_HOME-aware override for the .gbrain directory. Match
+ * `src/core/config.ts`: GBRAIN_HOME is the parent directory, and the actual
+ * state directory is always `<GBRAIN_HOME>/.gbrain`.
  *
  * Without this, `~/.gbrain/migrations/completed.jsonl` is the only path
  * doctor reads on filesystem checks — the test isolation contract that
@@ -40,7 +38,7 @@ function gbrainDir(): string {
   const override = process.env.GBRAIN_HOME;
   if (override) {
     const trimmed = override.trim();
-    if (trimmed) return trimmed;
+    if (trimmed) return join(trimmed, '.gbrain');
   }
   return join(home(), '.gbrain');
 }
