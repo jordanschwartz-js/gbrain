@@ -4,7 +4,7 @@
  * Coverage:
  *  - Recipes with `embedding.no_batch_cap: true` suppress the
  *    missing-max_batch_tokens startup warning (#779)
- *  - Real-provider recipes without the flag still warn (regression guard)
+ *  - Google's fixed-cap embedding recipe declares a real batch cap
  *  - listRecipes returns expected dynamic-cap recipes (ollama, litellm,
  *    llama-server) all flagged
  */
@@ -52,28 +52,19 @@ describe('v0.32 #779: no_batch_cap suppresses the missing-max_batch_tokens warni
     }
   });
 
-  test('configureGateway warns for google only when google embedding is configured', () => {
-    warnSpy.mockClear();
-    resetGateway();
-    configureGateway({ env: {} });
-    let messages = warnSpy.mock.calls.map(c => String(c[0] ?? ''));
-    expect(
-      messages.some(m => m.includes('"google"') && m.includes('without max_batch_tokens')),
-      'google should not warn while OpenAI default is configured',
-    ).toBe(false);
+  test('Google declares a fixed embedding batch cap and stays quiet', () => {
+    const google = getRecipe('google');
+    expect(google, 'google not registered').toBeDefined();
+    expect(google!.touchpoints.embedding?.max_batch_tokens).toBe(2048);
 
     warnSpy.mockClear();
     resetGateway();
-    configureGateway({
-      embedding_model: 'google:gemini-embedding-001',
-      embedding_dimensions: 768,
-      env: { GOOGLE_GENERATIVE_AI_API_KEY: 'fake' },
-    });
-    messages = warnSpy.mock.calls.map(c => String(c[0] ?? ''));
+    configureGateway({ env: {} });
+    const messages = warnSpy.mock.calls.map(c => String(c[0] ?? ''));
     expect(
       messages.some(m => m.includes('"google"') && m.includes('without max_batch_tokens')),
-      'google should warn when configured because it has fixed-cap models',
-    ).toBe(true);
+      'google should not warn once its fixed cap is declared',
+    ).toBe(false);
   });
 
   test('every recipe with empty models[] declares user_provided_models OR has openai-fast-path', () => {
