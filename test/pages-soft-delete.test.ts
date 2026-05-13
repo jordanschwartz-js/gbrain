@@ -297,7 +297,7 @@ describe('search visibility (soft-deleted pages hidden from searchKeyword)', () 
 
   test('searchKeyword hides pages from archived sources', async () => {
     await engine.executeRaw(
-      `INSERT INTO sources (id, name) VALUES ('archived-src', 'archived-src') ON CONFLICT DO NOTHING`,
+      `INSERT INTO sources (id, name, config) VALUES ('archived-src', 'archived-src', '{"federated": true}'::jsonb) ON CONFLICT DO NOTHING`,
     );
     await engine.executeRaw(
       `INSERT INTO pages (source_id, slug, type, title) VALUES ('archived-src', 'archived-src/secret', 'note', 'Secret')`,
