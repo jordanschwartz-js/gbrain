@@ -175,6 +175,17 @@ describe('queue.add trusted-submit gate for subagent', () => {
     ).rejects.toThrow(/non-Anthropic/i);
   });
 
+  test('subagent with explicit Ollama provider may use a local model', async () => {
+    const job = await queue.add(
+      'subagent',
+      { prompt: 'hi', provider: 'ollama', model: 'qwen3-coder:30b' },
+      {},
+      { allowProtectedSubmit: true },
+    );
+    expect(job.name).toBe('subagent');
+    expect(job.data.provider).toBe('ollama');
+  });
+
   test('v0.31.12: subagent with Anthropic data.model still succeeds', async () => {
     const job = await queue.add(
       'subagent',

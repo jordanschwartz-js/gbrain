@@ -18,6 +18,7 @@ import { MinionQueue } from '../src/core/minions/queue.ts';
 import {
   makeSubagentHandler,
   RateLeaseUnavailableError,
+  __testing,
   type MessagesClient,
 } from '../src/core/minions/handlers/subagent.ts';
 import type { ToolDef, MinionJobContext } from '../src/core/minions/types.ts';
@@ -418,6 +419,38 @@ describe('subagent handler input validation', () => {
     const handler = makeSubagentHandler({ engine, client, toolRegistry: [tool] });
     const ctx = await makeCtx({ prompt: 'x', allowed_tools: ['real', 'ghost_tool'] });
     await expect(handler(ctx)).rejects.toThrow(/unknown tool/);
+  });
+});
+
+describe('subagent handler provider adapters', () => {
+  test('ollama adapter converts tool calls into Anthropic-shaped blocks', () => {
+    const msg = __testing.ollamaResponseToAnthropic({
+      model: 'qwen3-coder:30b',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'call_1', function: { name: 'brain_search', arguments: { query: 'dream' } } },
+        ],
+      },
+      prompt_eval_count: 12,
+      eval_count: 3,
+    }, 'qwen3-coder:30b');
+
+    expect(msg.stop_reason).toBe('tool_use');
+    expect(msg.content[0]).toMatchObject({
+      type: 'tool_use',
+      id: 'call_1',
+      name: 'brain_search',
+      input: { query: 'dream' },
+    });
+    expect(msg.usage.input_tokens).toBe(12);
+  });
+
+  test('quote fidelity guard rejects fabricated quoted prose', () => {
+    expect(() => __testing.assertPutPageQuotesAreSourceFaithful({
+      content: '# Page\n\nJordan called this "made up phrase".',
+    }, 'actual source words', 'test source')).toThrow(/quote fidelity/);
   });
 });
 

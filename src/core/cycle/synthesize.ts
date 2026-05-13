@@ -293,10 +293,10 @@ export async function runPhaseSynthesize(
       return ok('no transcripts to process', { transcripts_processed: 0, pages_written: 0 });
     }
 
-    // Significance verdicts (cached in dream_verdicts; Haiku on miss).
+    // Significance verdicts (cached in dream_verdicts; provider call on miss).
     const worthProcessing: DiscoveredTranscript[] = [];
     const verdicts: Array<{ filePath: string; worth: boolean; reasons: string[]; cached: boolean }> = [];
-    const haiku = makeHaikuClient(); // null if no API key
+    const judge = makeJudgeClient(config); // null if required provider config is missing
     for (const t of transcripts) {
       const cached = await engine.getDreamVerdict(t.filePath, t.contentHash);
       if (cached) {
@@ -304,12 +304,12 @@ export async function runPhaseSynthesize(
         if (cached.worth_processing) worthProcessing.push(t);
         continue;
       }
-      if (!haiku) {
-        // No API key — can't judge. Skip with explicit reason; don't crash phase.
-        verdicts.push({ filePath: t.filePath, worth: false, reasons: ['no ANTHROPIC_API_KEY for significance judge'], cached: false });
+      if (!judge) {
+        // Missing provider config — can't judge. Skip with explicit reason; don't crash phase.
+        verdicts.push({ filePath: t.filePath, worth: false, reasons: [missingJudgeReason(config)], cached: false });
         continue;
       }
-      const verdict = await judgeSignificance(haiku, t, config.verdictModel);
+      const verdict = await judgeSignificance(judge, t, config.verdictModel);
       await engine.putDreamVerdict(t.filePath, t.contentHash, verdict);
       verdicts.push({ filePath: t.filePath, worth: verdict.worth_processing, reasons: verdict.reasons, cached: false });
       if (verdict.worth_processing) worthProcessing.push(t);
@@ -397,8 +397,12 @@ export async function runPhaseSynthesize(
         const childData: SubagentHandlerData = {
           prompt: buildSynthesisPrompt(t, chunks[i], i, chunks.length, priorContradictionsBlock),
           model: config.model,
+          provider: config.provider,
+          ollama_base_url: config.ollamaBaseUrl,
           max_turns: 30,
           allowed_slug_prefixes: allowedSlugPrefixes,
+          quote_fidelity_source: chunks[i],
+          quote_fidelity_label: t.basename,
         };
         // Idempotency key parity:
         //   - single-chunk → legacy `dream:synth:<filePath>:<hash16>` (byte-
@@ -513,6 +517,8 @@ interface SynthConfig {
   excludePatterns: string[];
   model: string;
   verdictModel: string;
+  provider: 'anthropic' | 'ollama';
+  ollamaBaseUrl: string;
   cooldownHours: number;
   /**
    * D1: Override the per-chunk token budget (model_context × HEADROOM_RATIO
@@ -553,6 +559,16 @@ async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig> {
     tier: 'utility',
     fallback: 'haiku',
   });
+  const { isAnthropicProvider } = await import('../model-config.ts');
+  const providerConfig = await engine.getConfig('dream.synthesize.provider');
+  const provider = providerConfig === 'anthropic'
+    ? 'anthropic'
+    : providerConfig === 'ollama'
+      ? 'ollama'
+      : isAnthropicProvider(model)
+        ? 'anthropic'
+        : 'ollama';
+  const ollamaBaseUrl = (await engine.getConfig('dream.synthesize.ollama_base_url')) || 'http://127.0.0.1:11434';
   const cooldownHoursStr = await engine.getConfig('dream.synthesize.cooldown_hours');
   const maxPromptTokensStr = await engine.getConfig('dream.synthesize.max_prompt_tokens');
   const maxChunksStr = await engine.getConfig('dream.synthesize.max_chunks_per_transcript');
@@ -590,6 +606,8 @@ async function loadSynthConfig(engine: BrainEngine): Promise<SynthConfig> {
     excludePatterns,
     model,
     verdictModel,
+    provider,
+    ollamaBaseUrl,
     cooldownHours: cooldownHoursStr ? Math.max(0, parseInt(cooldownHoursStr, 10) || 12) : 12,
     maxPromptTokens,
     maxChunksPerTranscript,
@@ -639,10 +657,69 @@ export interface JudgeClient {
   create: (params: Anthropic.MessageCreateParamsNonStreaming) => Promise<Anthropic.Message>;
 }
 
-function makeHaikuClient(): JudgeClient | null {
+function makeJudgeClient(config: Pick<SynthConfig, 'provider' | 'ollamaBaseUrl'>): JudgeClient | null {
+  if (config.provider === 'ollama') return makeOllamaJudgeClient(config.ollamaBaseUrl);
   if (!process.env.ANTHROPIC_API_KEY) return null;
   const client = new Anthropic();
   return { create: client.messages.create.bind(client.messages) };
+}
+
+function missingJudgeReason(config: Pick<SynthConfig, 'provider'>): string {
+  return config.provider === 'ollama'
+    ? 'ollama significance judge unavailable'
+    : 'no ANTHROPIC_API_KEY for significance judge';
+}
+
+export function makeOllamaJudgeClient(baseUrl = 'http://127.0.0.1:11434'): JudgeClient {
+  const root = baseUrl.replace(/\/+$/, '');
+  return {
+    create: async (params: Anthropic.MessageCreateParamsNonStreaming) => {
+      const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      const systemText = stringifyAnthropicContent(params.system as unknown);
+      if (systemText) messages.push({ role: 'system', content: systemText });
+      for (const m of params.messages ?? []) {
+        messages.push({ role: m.role, content: stringifyAnthropicContent(m.content) });
+      }
+
+      const response = await fetch(`${root}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: params.model,
+          stream: false,
+          format: 'json',
+          think: false,
+          messages,
+          options: { temperature: 0 },
+        }),
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`ollama ${response.status}: ${text.slice(0, 200) || response.statusText}`);
+      }
+
+      const payload = await response.json() as { message?: { content?: unknown }; error?: unknown };
+      if (payload.error) throw new Error(String(payload.error));
+      const text = typeof payload.message?.content === 'string' ? payload.message.content : '';
+      if (!text.trim()) throw new Error('ollama returned empty message content');
+      return { content: [{ type: 'text', text }] } as Anthropic.Message;
+    },
+  };
+}
+
+function stringifyAnthropicContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(block => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && 'text' in block && typeof (block as { text?: unknown }).text === 'string') {
+        return (block as { text: string }).text;
+      }
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
 }
 
 interface VerdictResult {
@@ -1073,4 +1150,5 @@ function makeError(cls: string, code: string, message: string, hint?: string): P
 // double-encoded jsonb regression). Not part of the runtime contract.
 export const __testing = {
   collectChildPutPageSlugs,
+  makeOllamaJudgeClient,
 };

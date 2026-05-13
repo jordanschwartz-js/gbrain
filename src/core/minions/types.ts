@@ -398,17 +398,22 @@ export function rowToMinionJob(row: Record<string, unknown>): MinionJob {
 // ---------------------------------------------------------------------------
 
 /**
- * Input payload for the 'subagent' handler. Shape is intentionally narrow —
- * tool registry and provider config resolve via handler-side defaults + env,
- * not per-job data, so restart/replay uses the same behavior.
+ * Input payload for the 'subagent' handler. Shape is intentionally narrow:
+ * tool registry resolves via handler-side defaults + env. Trusted
+ * orchestrators may pin provider/model so restart/replay uses the same
+ * behavior for that job.
  */
 export interface SubagentHandlerData {
   /** Top-level user turn kicking off the loop. */
   prompt: string;
   /** Optional subagent definition path (skills/subagents/*.md or plugin). */
   subagent_def?: string;
-  /** Anthropic model id. Defaults to sonnet at handler resolution time. */
+  /** Chat model id. Defaults from the selected provider/tier. */
   model?: string;
+  /** Optional provider override for trusted orchestrators. Defaults to Anthropic. */
+  provider?: 'anthropic' | 'ollama';
+  /** Optional Ollama base URL when provider='ollama'. */
+  ollama_base_url?: string;
   /** Max assistant turns before the loop fails with stop_reason='max_turns'. */
   max_turns?: number;
   /**
@@ -436,6 +441,14 @@ export interface SubagentHandlerData {
    * engine via BrainRegistry.getBrain() at buildOpContext time.
    */
   brain_id?: string;
+  /**
+   * Optional trusted source text for dream-synthesis quote fidelity checks.
+   * When set, brain_put_page calls reject double-quoted prose unless the
+   * quoted text appears exactly in this source.
+   */
+  quote_fidelity_source?: string;
+  /** Human-readable source label for quote fidelity errors. */
+  quote_fidelity_label?: string;
   /**
    * Trusted-workspace allow-list for put_page (v0.23 dream cycle).
    *
