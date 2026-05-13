@@ -709,7 +709,8 @@ async function handleCliOnly(command: string, args: string[]) {
   // hint instead of letting them fail later inside connectEngine or
   // mid-handler. v0.31.1 routes through `refuseThinClient` so every
   // refusal carries an actionable next-step hint (CDX-5 cherry-pick A).
-  if (THIN_CLIENT_REFUSED_COMMANDS.has(command)) {
+  const evalWhoknowsThinClientRoutable = command === 'eval' && args[0] === 'whoknows';
+  if (THIN_CLIENT_REFUSED_COMMANDS.has(command) && !evalWhoknowsThinClientRoutable) {
     const cfg = loadConfig();
     if (isThinClient(cfg)) {
       refuseThinClient(command, cfg!.remote_mcp!.mcp_url);
@@ -957,6 +958,18 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // v0.33.1.3: `gbrain eval whoknows` on thin-client installs bypasses
+  // connectEngine entirely — the eval routes per-query through the remote
+  // `find_experts` MCP op (the v0.31.1 routing seam). Local mode falls
+  // through to the engine-connected path below.
+  if (command === 'eval' && args[0] === 'whoknows') {
+    const cfgPre = loadConfig();
+    if (isThinClient(cfgPre)) {
+      const { runEvalWhoknows } = await import('./commands/eval-whoknows.ts');
+      process.exit(await runEvalWhoknows(null, args.slice(1)));
+    }
+  }
+
   // All remaining CLI-only commands need a DB connection
   const engine = await connectEngine();
   try {
@@ -1086,6 +1099,15 @@ async function handleCliOnly(command: string, args: string[]) {
       case 'anomalies': {
         const { runAnomalies } = await import('./commands/anomalies.ts');
         await runAnomalies(engine, args);
+        break;
+      }
+      case 'whoknows': {
+        // v0.33 (Issue #?): expertise + relationship-proximity routing.
+        // MCP op `find_experts` (read-scoped) backs the same code path; CLI
+        // dispatch here is the user-facing surface. Thin-client routing
+        // happens inside runWhoknows via isThinClient(cfg) (v0.31.1 pattern).
+        const { runWhoknows } = await import('./commands/whoknows.ts');
+        await runWhoknows(engine, args);
         break;
       }
       case 'transcripts': {
