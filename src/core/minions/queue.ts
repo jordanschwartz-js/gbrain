@@ -85,13 +85,16 @@ export class MinionQueue {
       );
     }
     // v0.31.12 subagent runtime enforcement (Layer 1 of 3 — Codex F1+F2 in
-    // plan review). The subagent loop in handlers/subagent.ts uses Anthropic's
-    // Messages API with prompt caching on system + tools. Routing it elsewhere
-    // silently breaks. Reject non-Anthropic data.model at the queue boundary
-    // so the job never enters waiting state.
+    // plan review). Anthropic remains the default subagent route. Trusted
+    // orchestrators may explicitly set provider='ollama' for local provider-
+    // backed jobs such as dream synthesis; otherwise reject non-Anthropic
+    // data.model at the queue boundary so accidental misroutes never enter
+    // waiting state.
     if (jobName === 'subagent' && data && typeof data === 'object') {
       const submittedModel = (data as { model?: unknown }).model;
-      if (typeof submittedModel === 'string' && submittedModel.length > 0) {
+      const submittedProvider = (data as { provider?: unknown }).provider;
+      const explicitOllama = submittedProvider === 'ollama';
+      if (!explicitOllama && typeof submittedModel === 'string' && submittedModel.length > 0) {
         // Lazy import to avoid pulling model-config (which imports engine types)
         // into the queue module's eager-load surface.
         const { isAnthropicProvider } = await import('../model-config.ts');

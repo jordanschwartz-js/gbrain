@@ -1,7 +1,7 @@
 /**
  * Subagent LLM-loop handler (v0.15).
  *
- * Runs one Anthropic Messages API conversation with tool use. The loop is
+ * Runs one provider-backed chat conversation with tool use. The loop is
  * crash-resumable: subagent_messages + subagent_tool_executions together
  * are the single source of truth about where the conversation is. On
  * resume after a worker kill, we load all committed rows, trust any tool
@@ -14,7 +14,8 @@
  *     renewable error so the worker re-claims.
  *   - dual-signal abort wiring (ctx.signal + ctx.shutdownSignal) drains
  *     the in-flight call and commits whatever turns are already persisted.
- *   - Anthropic prompt cache markers on system + tools blocks.
+ *   - Anthropic prompt cache markers on system + tools blocks when Anthropic
+ *     is selected.
  *   - token rollup via ctx.updateTokens per turn.
  *
  * NOT in v0.15: refusal detection, stop_reason=max_tokens partial
@@ -52,11 +53,81 @@ import { resolveModel, isAnthropicProvider, TIER_DEFAULTS } from '../../model-co
 // ── Defaults ────────────────────────────────────────────────
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_OLLAMA_MODEL = 'gpt-oss:20b';
+const DEFAULT_OLLAMA_BASE_URL = 'http://127.0.0.1:11434';
 const DEFAULT_MAX_TURNS = 20;
 const DEFAULT_RATE_KEY = 'anthropic:messages';
 const DEFAULT_MAX_CONCURRENT = Number(process.env.GBRAIN_ANTHROPIC_MAX_INFLIGHT ?? '8');
 const DEFAULT_LEASE_TTL_MS = 120_000;
 const DEFAULT_SYSTEM = 'You are a helpful assistant running as a gbrain subagent.';
+
+// ── Dream synthesis quote fidelity guard ────────────────────
+
+function withQuoteFidelityGuard(
+  tools: ToolDef[],
+  source: string,
+  label = 'source transcript',
+): ToolDef[] {
+  return tools.map(tool => {
+    if (tool.name !== 'brain_put_page') return tool;
+    return {
+      ...tool,
+      async execute(input, ctx) {
+        assertPutPageQuotesAreSourceFaithful(input, source, label);
+        return tool.execute(input, ctx);
+      },
+    };
+  });
+}
+
+function assertPutPageQuotesAreSourceFaithful(input: unknown, source: string, label: string): void {
+  const params = parseToolInputObject(input);
+  const content = typeof params.content === 'string' ? params.content : '';
+  const body = stripFrontmatter(content);
+  const quotedSpans = extractDoubleQuotedSpans(body);
+  if (quotedSpans.length === 0) return;
+
+  const normalizedSource = normalizeQuoteText(source);
+  const invalid = quotedSpans.filter(q => !normalizedSource.includes(normalizeQuoteText(q)));
+  if (invalid.length === 0) return;
+
+  const examples = invalid.slice(0, 3).map(q => `"${q}"`).join(', ');
+  throw new Error(
+    `dream synthesis quote fidelity check failed: ${examples} not found verbatim in ${label}. ` +
+    'Use unquoted paraphrase/inference text unless the quoted words are copied exactly from the user-authored source.',
+  );
+}
+
+function parseToolInputObject(input: unknown): Record<string, unknown> {
+  if (input && typeof input === 'object' && !Array.isArray(input)) return input as Record<string, unknown>;
+  if (typeof input === 'string') {
+    try {
+      const parsed = JSON.parse(input) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch { /* fall through */ }
+  }
+  return {};
+}
+
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  return end >= 0 ? content.slice(end + 4) : content;
+}
+
+function extractDoubleQuotedSpans(content: string): string[] {
+  const spans: string[] = [];
+  const re = /"([^"\n]+)"|“([^”\n]+)”/g;
+  for (const match of content.matchAll(re)) {
+    const span = (match[1] ?? match[2] ?? '').trim();
+    if (span.length > 0) spans.push(span);
+  }
+  return spans;
+}
+
+function normalizeQuoteText(text: string): string {
+  return text.replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
+}
 
 // ── Injectable surfaces (for tests) ─────────────────────────
 
@@ -123,8 +194,8 @@ interface PersistedToolExec {
 /**
  * Build a subagent handler bound to a specific engine. `registerBuiltin
  * Handlers` wires this up as `worker.register('subagent', handler)` at
- * worker startup. Always registered — `ANTHROPIC_API_KEY` is the natural
- * cost gate and `PROTECTED_JOB_NAMES` gates submission.
+ * worker startup. Always registered; Anthropic remains the default provider,
+ * while trusted orchestrators can explicitly request local Ollama.
  */
 export function makeSubagentHandler(deps: SubagentDeps) {
   const engine = deps.engine;
@@ -134,9 +205,7 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   // right object; JS method-call semantics preserve `this` at the call
   // site (subagent.ts invokes client.create(...) with client === sdk.messages).
   const makeAnthropic = deps.makeAnthropic ?? (() => new Anthropic());
-  const client: MessagesClient = deps.client ?? makeAnthropic().messages;
   const config = deps.config ?? loadConfig() ?? ({ engine: 'postgres' } as GBrainConfig);
-  const rateLeaseKey = deps.rateLeaseKey ?? DEFAULT_RATE_KEY;
   const maxConcurrent = deps.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   const leaseTtlMs = deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
 
@@ -146,25 +215,27 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       throw new Error('subagent job data.prompt is required (string)');
     }
 
-    // v0.31.12 subagent runtime enforcement (Layer 2 of 3 — see plan/Codex F1+F2+F13).
-    // - If `data.model` is set and non-Anthropic, reject (Layer 1 fallback if the
-    //   submit-time guard in MinionQueue.add didn't fire — defense in depth).
-    // - Otherwise route through resolveModel with tier=subagent. The resolver
-    //   warns + falls back to TIER_DEFAULTS.subagent if models.default or
-    //   models.tier.subagent resolved to non-Anthropic.
-    if (data.model && !isAnthropicProvider(data.model)) {
+    const provider = data.provider === 'ollama' ? 'ollama' : 'anthropic';
+    // v0.31.12 subagent runtime enforcement remains for Anthropic jobs. Local
+    // Ollama jobs are allowed only when trusted orchestrators set provider.
+    if (provider === 'anthropic' && data.model && !isAnthropicProvider(data.model)) {
       throw new Error(
         `subagent job rejected: data.model "${data.model}" is non-Anthropic. ` +
         `The subagent loop is Anthropic-only (Messages API + prompt caching). ` +
         `Pass an Anthropic model id (e.g. claude-sonnet-4-6) or omit data.model to use the configured default.`,
       );
     }
-    const model = data.model
-      ?? await resolveModel(engine, {
-        tier: 'subagent',
-        configKey: 'models.subagent',
-        fallback: TIER_DEFAULTS.subagent,
-      });
+    const model = data.model ?? (provider === 'ollama'
+      ? DEFAULT_OLLAMA_MODEL
+      : await resolveModel(engine, {
+          tier: 'subagent',
+          configKey: 'models.subagent',
+          fallback: TIER_DEFAULTS.subagent,
+        }));
+    const client = provider === 'ollama'
+      ? makeOllamaMessagesClient(data.ollama_base_url ?? DEFAULT_OLLAMA_BASE_URL)
+      : (deps.client ?? makeAnthropic().messages);
+    const rateKey = deps.rateLeaseKey ?? (provider === 'ollama' ? 'ollama:chat' : DEFAULT_RATE_KEY);
     const maxTurns = data.max_turns ?? DEFAULT_MAX_TURNS;
     const systemPrompt = data.system ?? DEFAULT_SYSTEM;
 
@@ -181,9 +252,12 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       brainId: data.brain_id,
       allowedSlugPrefixes: data.allowed_slug_prefixes,
     });
-    const toolDefs = data.allowed_tools && data.allowed_tools.length > 0
+    const baseToolDefs = data.allowed_tools && data.allowed_tools.length > 0
       ? filterAllowedTools(registry, data.allowed_tools)
       : registry;
+    const toolDefs = data.quote_fidelity_source !== undefined
+      ? withQuoteFidelityGuard(baseToolDefs, data.quote_fidelity_source, data.quote_fidelity_label)
+      : baseToolDefs;
 
     logSubagentSubmission({
       caller: 'worker',
@@ -327,11 +401,11 @@ export function makeSubagentHandler(deps: SubagentDeps) {
       }
 
       // 1. Acquire rate lease for the outbound call.
-      const lease = await acquireLease(engine, rateLeaseKey, ctx.id, maxConcurrent, { ttlMs: leaseTtlMs });
+      const lease = await acquireLease(engine, rateKey, ctx.id, maxConcurrent, { ttlMs: leaseTtlMs });
       if (!lease.acquired) {
         // No slots — treat as a renewable error so the worker re-claims
         // the job later. Don't fail terminally.
-        throw new RateLeaseUnavailableError(rateLeaseKey, lease.activeCount, lease.maxConcurrent);
+        throw new RateLeaseUnavailableError(rateKey, lease.activeCount, lease.maxConcurrent);
       }
 
       let assistantMsg: Anthropic.Message;
@@ -576,6 +650,166 @@ export function makeSubagentHandler(deps: SubagentDeps) {
   };
 }
 
+// ── Provider adapters ───────────────────────────────────────
+
+export function makeOllamaMessagesClient(baseUrl = DEFAULT_OLLAMA_BASE_URL): MessagesClient {
+  const root = baseUrl.replace(/\/+$/, '');
+  return {
+    create: async (params, opts) => {
+      const converted = anthropicParamsToOllama(params);
+      const response = await fetch(`${root}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: opts?.signal,
+        body: JSON.stringify({
+          model: params.model,
+          stream: false,
+          messages: converted.messages,
+          ...(converted.tools.length > 0 ? { tools: converted.tools } : {}),
+          options: { temperature: 0 },
+        }),
+      });
+      if (!response.ok) {
+        const text = await response.text().catch(() => '');
+        throw new Error(`ollama ${response.status}: ${text.slice(0, 200) || response.statusText}`);
+      }
+      const payload = await response.json() as OllamaChatResponse;
+      if (payload.error) throw new Error(String(payload.error));
+      return ollamaResponseToAnthropic(payload, params.model);
+    },
+  };
+}
+
+interface OllamaToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: unknown };
+}
+
+interface OllamaChatResponse {
+  model?: string;
+  message?: { role?: string; content?: string; thinking?: string; tool_calls?: OllamaToolCall[] };
+  prompt_eval_count?: number;
+  eval_count?: number;
+  error?: unknown;
+}
+
+function anthropicParamsToOllama(params: Anthropic.MessageCreateParamsNonStreaming): {
+  messages: Array<Record<string, unknown>>;
+  tools: Array<Record<string, unknown>>;
+} {
+  const messages: Array<Record<string, unknown>> = [];
+  const toolNameById = new Map<string, string>();
+  const systemText = stringifyAnthropicContent(params.system as unknown);
+  if (systemText) messages.push({ role: 'system', content: systemText });
+
+  for (const m of params.messages ?? []) {
+    const blocks = Array.isArray(m.content)
+      ? m.content as ContentBlock[]
+      : [{ type: 'text', text: m.content as string } as ContentBlock];
+    const text = blocks
+      .filter(b => b.type === 'text' && typeof b.text === 'string')
+      .map(b => b.text as string)
+      .join('\n');
+    const toolUses = blocks.filter(
+      (b): b is { type: 'tool_use'; id: string; name: string; input: unknown } & Record<string, unknown> =>
+        b.type === 'tool_use',
+    );
+    const toolResults = blocks.filter(
+      (b): b is { type: 'tool_result'; tool_use_id: string; content: unknown; is_error?: boolean } & Record<string, unknown> =>
+        b.type === 'tool_result',
+    );
+
+    if (m.role === 'assistant') {
+      const msg: Record<string, unknown> = { role: 'assistant', content: text };
+      if (toolUses.length > 0) {
+        msg.tool_calls = toolUses.map(use => {
+          toolNameById.set(use.id, use.name);
+          return { id: use.id, type: 'function', function: { name: use.name, arguments: use.input ?? {} } };
+        });
+      }
+      messages.push(msg);
+      continue;
+    }
+
+    if (toolResults.length > 0) {
+      if (text) messages.push({ role: 'user', content: text });
+      for (const result of toolResults) {
+        messages.push({
+          role: 'tool',
+          content: asStringIfNotObject(result.content),
+          tool_name: toolNameById.get(result.tool_use_id),
+        });
+      }
+      continue;
+    }
+
+    messages.push({ role: 'user', content: text });
+  }
+
+  const tools = ((params.tools ?? []) as unknown as Array<Record<string, unknown>>).map(t => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.input_schema ?? { type: 'object', properties: {} },
+    },
+  }));
+  return { messages, tools };
+}
+
+function ollamaResponseToAnthropic(payload: OllamaChatResponse, requestedModel: string): Anthropic.Message {
+  const content: ContentBlock[] = [];
+  const text = typeof payload.message?.content === 'string' ? payload.message.content : '';
+  if (text.trim()) content.push({ type: 'text', text });
+  for (const call of payload.message?.tool_calls ?? []) {
+    const name = call.function?.name;
+    if (!name) continue;
+    content.push({
+      type: 'tool_use',
+      id: call.id || `ollama_tool_${content.length}_${Math.random().toString(36).slice(2, 10)}`,
+      name,
+      input: normalizeOllamaToolArgs(call.function?.arguments),
+    });
+  }
+  if (content.length === 0) content.push({ type: 'text', text: '' });
+  return {
+    id: `ollama_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    model: payload.model ?? requestedModel,
+    content: content as Anthropic.Message['content'],
+    stop_reason: content.some(b => b.type === 'tool_use') ? 'tool_use' : 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: payload.prompt_eval_count ?? 0,
+      output_tokens: payload.eval_count ?? 0,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 0,
+    } as any,
+  } as Anthropic.Message;
+}
+
+function normalizeOllamaToolArgs(args: unknown): unknown {
+  if (typeof args === 'string') {
+    try { return JSON.parse(args); } catch { return {}; }
+  }
+  return args && typeof args === 'object' ? args : {};
+}
+
+function stringifyAnthropicContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map(block => {
+      if (typeof block === 'string') return block;
+      if (block && typeof block === 'object' && 'text' in block && typeof (block as { text?: unknown }).text === 'string') {
+        return (block as { text: string }).text;
+      }
+      return '';
+    }).filter(Boolean).join('\n');
+  }
+  return '';
+}
+
 // ── Internal: persistence ───────────────────────────────────
 
 async function loadPriorMessages(engine: BrainEngine, jobId: number): Promise<PersistedMessage[]> {
@@ -783,5 +1017,12 @@ export const __testing = {
   persistToolExecComplete,
   persistToolExecFailed,
   asStringIfNotObject,
+  withQuoteFidelityGuard,
+  assertPutPageQuotesAreSourceFaithful,
+  extractDoubleQuotedSpans,
+  anthropicParamsToOllama,
+  ollamaResponseToAnthropic,
+  makeOllamaMessagesClient,
   DEFAULT_MODEL,
+  DEFAULT_OLLAMA_MODEL,
 };
