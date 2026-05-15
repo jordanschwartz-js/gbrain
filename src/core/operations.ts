@@ -1226,7 +1226,6 @@ const query: Operation = {
       language: (p.lang as string) || undefined,
       symbolKind: (p.symbol_kind as string) || undefined,
       nearSymbol: (p.near_symbol as string) || undefined,
-      sourceId: (p.source as string) || undefined,
       walkDepth: typeof p.walk_depth === 'number' ? (p.walk_depth as number) : undefined,
       ...querySourceScope,
       // v0.29.1 — agent-explicit recency + salience. Omitted = heuristic defaults.

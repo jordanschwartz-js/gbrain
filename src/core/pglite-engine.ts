@@ -940,7 +940,10 @@ export class PGLiteEngine implements BrainEngine {
     // Reads against COALESCE(effective_date, updated_at) so date filtering
     // matches user intent (a meeting was on its event_date, not when it
     // got reimported). Same param shape as Postgres engine.
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
+    if (opts?.sourceIds && opts.sourceIds.length > 0) {
+      params.push(opts.sourceIds);
+      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       extraFilter += ` AND p.source_id = $${params.length}`;
     } else if (opts?.sourceId !== '__all__') {
@@ -954,15 +957,6 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.beforeDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) < $${params.length}::timestamptz`;
     }
-    // v0.34.1 (#861 — P0 leak seal): source-isolation. Array wins over scalar.
-    if (opts?.sourceIds && opts.sourceIds.length > 0) {
-      params.push(opts.sourceIds);
-      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
-      params.push(opts.sourceId);
-      extraFilter += ` AND p.source_id = $${params.length}`;
-    }
-
     const { rows } = await this.db.query(
       `WITH ranked AS (
          SELECT
@@ -1183,7 +1177,10 @@ export class PGLiteEngine implements BrainEngine {
       extraFilter += ` AND cc.symbol_type = $${params.length}`;
     }
     // v0.29.1 since/until parity (codex pass-1 #10).
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
+    if (opts?.sourceIds && opts.sourceIds.length > 0) {
+      params.push(opts.sourceIds);
+      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       extraFilter += ` AND p.source_id = $${params.length}`;
     } else if (opts?.sourceId !== '__all__') {
@@ -1197,17 +1194,6 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.beforeDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) < $${params.length}::timestamptz`;
     }
-    // v0.34.1 (#861 — P0 leak seal): source-isolation for the chunk-grain
-    // anchor primitive. Layer 7 two-pass walks from these anchors so a
-    // foreign-source anchor would let the walk leak into foreign neighbors.
-    if (opts?.sourceIds && opts.sourceIds.length > 0) {
-      params.push(opts.sourceIds);
-      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
-      params.push(opts.sourceId);
-      extraFilter += ` AND p.source_id = $${params.length}`;
-    }
-
     // visibilityClause already declared above (v0.32.7: hoisted so CJK branch can reuse).
 
     const { rows } = await this.db.query(
@@ -1277,7 +1263,10 @@ export class PGLiteEngine implements BrainEngine {
     // v0.29.1 since/until parity (codex pass-1 #10). Filter applied INSIDE
     // the inner CTE so HNSW's candidate pool already excludes out-of-range
     // pages — preserves pagination contract.
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
+    if (opts?.sourceIds && opts.sourceIds.length > 0) {
+      params.push(opts.sourceIds);
+      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       extraFilter += ` AND p.source_id = $${params.length}`;
     } else if (opts?.sourceId !== '__all__') {
@@ -1291,17 +1280,6 @@ export class PGLiteEngine implements BrainEngine {
       params.push(opts.beforeDate);
       extraFilter += ` AND COALESCE(p.effective_date, p.updated_at, p.created_at) < $${params.length}::timestamptz`;
     }
-    // v0.34.1 (#861, F2 — P0 leak seal): source-isolation in the INNER CTE
-    // so HNSW candidate pool narrows before re-rank. Mirrors postgres-engine
-    // placement decision (codex flagged this during plan review).
-    if (opts?.sourceIds && opts.sourceIds.length > 0) {
-      params.push(opts.sourceIds);
-      extraFilter += ` AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
-      params.push(opts.sourceId);
-      extraFilter += ` AND p.source_id = $${params.length}`;
-    }
-
     // v0.26.5: visibility filter applied in the inner CTE so HNSW sees the
     // same candidate count it always did. See postgres-engine.ts for rationale.
     const visibilityClause = buildVisibilityClause('p', 's');

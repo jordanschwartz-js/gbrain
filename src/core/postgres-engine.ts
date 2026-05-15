@@ -988,13 +988,6 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
-    let sourceClause = '';
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
-      params.push(opts.sourceId);
-      sourceClause = `AND p.source_id = $${params.length}`;
-    } else if (opts?.sourceId !== '__all__') {
-      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
-    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
@@ -1017,9 +1010,11 @@ export class PostgresEngine implements BrainEngine {
     if (opts?.sourceIds && opts.sourceIds.length > 0) {
       params.push(opts.sourceIds);
       sourceClause = `AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
     }
     params.push(innerLimit);
     const innerLimitParam = `$${params.length}`;
@@ -1148,13 +1143,6 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
-    let sourceClause = '';
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
-      params.push(opts.sourceId);
-      sourceClause = `AND p.source_id = $${params.length}`;
-    } else if (opts?.sourceId !== '__all__') {
-      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
-    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
@@ -1172,9 +1160,11 @@ export class PostgresEngine implements BrainEngine {
     if (opts?.sourceIds && opts.sourceIds.length > 0) {
       params.push(opts.sourceIds);
       sourceClause = `AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
     }
     params.push(limit);
     const limitParam = `$${params.length}`;
@@ -1277,13 +1267,6 @@ export class PostgresEngine implements BrainEngine {
       symbolKindClause = `AND cc.symbol_type = $${params.length}`;
     }
     // v0.27.0: date filtering support
-    let sourceClause = '';
-    if (opts?.sourceId && opts.sourceId !== '__all__') {
-      params.push(opts.sourceId);
-      sourceClause = `AND p.source_id = $${params.length}`;
-    } else if (opts?.sourceId !== '__all__') {
-      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
-    }
     let afterDateClause = '';
     if (opts?.afterDate) {
       params.push(opts.afterDate);
@@ -1303,9 +1286,11 @@ export class PostgresEngine implements BrainEngine {
     if (opts?.sourceIds && opts.sourceIds.length > 0) {
       params.push(opts.sourceIds);
       sourceClause = `AND p.source_id = ANY($${params.length}::text[])`;
-    } else if (opts?.sourceId) {
+    } else if (opts?.sourceId && opts.sourceId !== '__all__') {
       params.push(opts.sourceId);
       sourceClause = `AND p.source_id = $${params.length}`;
+    } else if (opts?.sourceId !== '__all__') {
+      sourceClause = `AND COALESCE(s.config->>'federated', 'false') = 'true'`;
     }
     params.push(innerLimit);
     const innerLimitParam = `$${params.length}`;
