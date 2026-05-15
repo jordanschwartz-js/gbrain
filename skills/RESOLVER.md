@@ -1,6 +1,13 @@
 # GBrain Skill Resolver
 
-This is the dispatcher. Skills are the implementation. **Read the skill file before acting.** If two skills could match, read both. They are designed to chain (e.g., ingest then enrich for each entity).
+This is the GBrain skill dispatcher, not the whole Steve/OpenClaw routing
+system. Use it after a request is already known to belong in GBrain or the brain
+repo. For Steve/OpenClaw lane choice, read
+`/Users/jordanschwartz/OpenClaw/brain/systems/openclaw-stack/steve/routing-resolver.md`.
+
+Skills are the implementation. **Read the skill file before acting.** If two
+skills could match, read both. They are designed to chain (e.g., ingest then
+enrich for each entity).
 
 ## Always-on (every message)
 
@@ -61,6 +68,16 @@ This is the dispatcher. Skills are the implementation. **Read the skill file bef
 | "Validate skills", skill health check | `skills/testing/SKILL.md` |
 | Webhook setup, external event processing | `skills/webhook-transforms/SKILL.md` |
 | "Spawn agent", "background task", "parallel tasks", "steer agent", "pause/resume agent", "gbrain jobs submit", "submit a gbrain job", "submit a shell job", "shell job" | `skills/minion-orchestrator/SKILL.md` |
+
+## Steve/OpenClaw routing handoff
+
+| Trigger | First stop |
+|---------|------------|
+| Discord/Telegram routing, approvals, reactions, visible replies, delivery surface | Steve routing resolver, then `steve/communication.md` and OpenClaw channel docs |
+| Remove, pause, stop surfacing, or clean up an OpenClaw/Steve lane | `systems/openclaw-stack/runbooks/decommissioning.md` |
+| Internal config/routing/runtime/source-of-truth change | `systems/openclaw-stack/runbooks/system-wiki-maintenance.md` docs closeout gate |
+| Repo/code work through Steve | `systems/openclaw-stack/steve/gstack-routing.md` |
+| Exact-time jobs or proactive loop design | `systems/openclaw-stack/steve/proactive-routing.md` |
 
 ## Setup & migration
 

@@ -80,7 +80,15 @@ export interface BareTweetHit {
   phrase: string;
 }
 
+function isRawMessageArchiveSlug(slug: string): boolean {
+  return slug.startsWith('threads-all/') || slug.startsWith('threads/');
+}
+
 export function findBareTweetHits(compiledTruth: string, slug: string): BareTweetHit[] {
+  // Raw message archives are evidence sources, not polished brain claims.
+  // People casually saying "click on tweet" should not create integrity debt.
+  if (isRawMessageArchiveSlug(slug)) return [];
+
   const hits: BareTweetHit[] = [];
   const lines = compiledTruth.split('\n');
   let insideFence = false;

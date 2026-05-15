@@ -85,6 +85,11 @@ describe('findBareTweetHits', () => {
     const hits = findBareTweetHits('He tweeted about it in a tweet later.', 'people/x');
     expect(hits).toHaveLength(1);
   });
+
+  test('skips raw message archive slugs', () => {
+    const hits = findBareTweetHits('Rapoport just tweeted about us', 'threads-all/2026-05-10-imessage-direct-chat-24-00024-part-001');
+    expect(hits).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

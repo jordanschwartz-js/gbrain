@@ -11,6 +11,7 @@ import type { GBrainConfig } from './config.ts';
 import type { PageType } from './types.ts';
 import { importFromContent } from './import-file.ts';
 import { isEmbeddingProviderConfigured } from './embedding.ts';
+import { parseMarkdown } from './markdown.ts';
 import { hybridSearch } from './search/hybrid.ts';
 import { expandQuery } from './search/expansion.ts';
 import { dedupResults } from './search/dedup.ts';
@@ -146,6 +147,82 @@ export function matchesSlugAllowList(slug: string, prefixes: readonly string[]):
     }
   }
   return false;
+}
+
+const DREAM_SYNTH_DUP_PREFIXES = ['personal/reflections/', 'ideas/'] as const;
+
+function isDreamSynthesisAllowList(prefixes: readonly string[]): boolean {
+  return prefixes.some(p => p === 'personal/reflections/*' || p === 'ideas/*');
+}
+
+function dreamWritableTopicPrefix(slug: string): string | null {
+  for (const prefix of DREAM_SYNTH_DUP_PREFIXES) {
+    if (slug.startsWith(prefix) && slug.length > prefix.length) return prefix;
+  }
+  return null;
+}
+
+function normalizeTopicTokens(slug: string, title = ''): Set<string> {
+  const leaf = slug.split('/').pop() ?? slug;
+  const withoutDate = leaf.replace(/^\d{4}-\d{2}-\d{2}-/, '');
+  const withoutHash = withoutDate.replace(/-[a-f0-9]{6,12}$/i, '');
+  const stop = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'about', 'notes', 'note']);
+  return new Set(
+    `${withoutHash} ${title}`
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter(t => t.length >= 3 && !stop.has(t)),
+  );
+}
+
+function tokenOverlapScore(a: Set<string>, b: Set<string>): { score: number; overlap: string[] } {
+  const overlap = [...a].filter(t => b.has(t));
+  const denom = Math.min(a.size, b.size);
+  return { score: denom === 0 ? 0 : overlap.length / denom, overlap };
+}
+
+async function assertNoDreamSynthesisNearDuplicate(
+  ctx: OperationContext,
+  slug: string,
+  content: string,
+): Promise<void> {
+  const allowList = ctx.allowedSlugPrefixes;
+  if (!allowList || !isDreamSynthesisAllowList(allowList)) return;
+  const topicPrefix = dreamWritableTopicPrefix(slug);
+  if (!topicPrefix) return;
+
+  // Exact slug writes are updates and are allowed; the guard only blocks
+  // creating a second hash/date-suffixed page for an existing topic.
+  if (await ctx.engine.getPage(slug)) return;
+
+  let title = '';
+  try {
+    title = parseMarkdown(content).title ?? '';
+  } catch {
+    // Invalid markdown/frontmatter is handled by importFromContent later.
+  }
+  const incoming = normalizeTopicTokens(slug, title);
+  if (incoming.size < 3) return;
+
+  const candidates = await ctx.engine.listPages({ slugPrefix: topicPrefix, limit: 1000 });
+  let best: { slug: string; title: string; score: number; overlap: string[] } | null = null;
+  for (const page of candidates) {
+    if (page.slug === slug) continue;
+    const existing = normalizeTopicTokens(page.slug, page.title ?? '');
+    const match = tokenOverlapScore(incoming, existing);
+    if (match.overlap.length < 3 || match.score < 0.72) continue;
+    if (!best || match.score > best.score || match.overlap.length > best.overlap.length) {
+      best = { slug: page.slug, title: page.title ?? '', score: match.score, overlap: match.overlap };
+    }
+  }
+
+  if (best) {
+    throw new OperationError(
+      'invalid_params',
+      `dream synthesis near-duplicate rejected for '${slug}'; existing page '${best.slug}' appears to cover the same topic`,
+      `Read/update '${best.slug}' instead of creating a new page. Overlapping topic tokens: ${best.overlap.slice(0, 8).join(', ')}`,
+    );
+  }
 }
 
 /**
@@ -365,6 +442,7 @@ const put_page: Operation = {
             `put_page slug '${slug}' is not within the trusted-workspace allow-list (${allowList.join(', ')})`
           );
         }
+        await assertNoDreamSynthesisNearDuplicate(ctx, slug, p.content as string);
       } else {
         // Legacy default: agent-namespace confinement.
         const prefix = `wiki/agents/${ctx.subagentId}/`;

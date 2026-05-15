@@ -754,9 +754,13 @@ HANDLER TYPES (built in)
         }
 
         const events = readSupervisorEvents({ sinceMs: 24 * 60 * 60 * 1000 });
-        const lastStart = events.filter(e => e.event === 'started').pop()?.ts ?? null;
-        const crashes24h = events.filter(e => e.event === 'worker_exited').length;
-        const maxCrashesEvent = events.filter(e => e.event === 'max_crashes_exceeded').pop() ?? null;
+        const lastStartEvent = events.filter(e => e.event === 'started').pop() ?? null;
+        const lastStart = lastStartEvent?.ts ?? null;
+        const activeEvents = lastStartEvent
+          ? events.filter(e => typeof e.ts === 'string' && e.ts >= lastStartEvent.ts)
+          : events;
+        const crashes24h = activeEvents.filter(e => e.event === 'worker_exited').length;
+        const maxCrashesEvent = activeEvents.filter(e => e.event === 'max_crashes_exceeded').pop() ?? null;
 
         const status = {
           running,

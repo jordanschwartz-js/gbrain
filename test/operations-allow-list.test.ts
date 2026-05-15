@@ -13,7 +13,8 @@
  *     (regression guard for FAIL-CLOSED behavior)
  */
 
-import { describe, test, expect } from 'bun:test';
+import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
+import { PGLiteEngine } from '../src/core/pglite-engine.ts';
 import { matchesSlugAllowList, operations, OperationError, type OperationContext } from '../src/core/operations.ts';
 
 const STUB_LOGGER = {
@@ -23,6 +24,22 @@ const STUB_LOGGER = {
 };
 
 const STUB_CONFIG = {} as unknown as Parameters<typeof operations[number]['handler']>[0]['config'];
+let engine: PGLiteEngine;
+const config = STUB_CONFIG;
+
+beforeAll(async () => {
+  engine = new PGLiteEngine();
+  await engine.connect({ engine: 'pglite' } as never);
+  await engine.initSchema();
+}, 60_000);
+
+afterAll(async () => {
+  if (engine) await engine.disconnect();
+}, 60_000);
+
+beforeEach(async () => {
+  if (engine) await engine.executeRaw('DELETE FROM pages');
+});
 
 function findOp(name: string) {
   const op = operations.find(o => o.name === name);
@@ -92,6 +109,59 @@ describe('matchesSlugAllowList — glob semantics', () => {
   test('does NOT match prefix without trailing segment', () => {
     expect(matchesSlugAllowList('wiki/personal/reflections',
       ['wiki/personal/reflections/*'])).toBe(false);
+  });
+});
+
+describe('put_page trusted-workspace duplicate guard', () => {
+  test('rejects new dream synthesis pages that look like existing reflection topics', async () => {
+    const putPage = operations.find(o => o.name === 'put_page')!;
+    const ctx: OperationContext = {
+      engine,
+      config,
+      logger: console,
+      dryRun: false,
+      remote: true,
+      viaSubagent: true,
+      subagentId: 12,
+      allowedSlugPrefixes: ['personal/reflections/*', 'ideas/*'],
+    };
+
+    await putPage.handler(ctx, {
+      slug: 'personal/reflections/2026-05-10-codex-dream-quality-automation-gate-a1b2c3',
+      content: '---\ntitle: Codex Dream Quality Automation Gate\n---\nExisting body with [GBrain](projects/gbrain).',
+    });
+
+    await expect(putPage.handler(ctx, {
+      slug: 'personal/reflections/2026-05-11-codex-dream-quality-automation-gate-d4e5f6',
+      content: '---\ntitle: Codex Dream Quality Automation Gate\n---\nDuplicate body with [GBrain](projects/gbrain).',
+    })).rejects.toThrow(/near-duplicate rejected/);
+  });
+
+  test('allows updating the existing dream synthesis slug', async () => {
+    const putPage = operations.find(o => o.name === 'put_page')!;
+    const ctx: OperationContext = {
+      engine,
+      config,
+      logger: console,
+      dryRun: false,
+      remote: true,
+      viaSubagent: true,
+      subagentId: 12,
+      allowedSlugPrefixes: ['personal/reflections/*', 'ideas/*'],
+    };
+    const slug = 'personal/reflections/2026-05-10-steve-proactive-system-hygiene-a1b2c3';
+
+    await putPage.handler(ctx, {
+      slug,
+      content: '---\ntitle: Steve Proactive System Hygiene\n---\nOriginal body with [OpenClaw](projects/openclaw).',
+    });
+    const res = await putPage.handler(ctx, {
+      slug,
+      content: '---\ntitle: Steve Proactive System Hygiene\n---\nUpdated body with [OpenClaw](projects/openclaw).',
+    });
+
+    expect((res as { slug: string }).slug).toBe(slug);
+    expect((await engine.getPage(slug))?.compiled_truth).toContain('Updated body');
   });
 });
 

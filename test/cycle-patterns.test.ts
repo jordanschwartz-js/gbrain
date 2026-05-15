@@ -70,8 +70,8 @@ describe('patterns phase wiring', () => {
 });
 
 describe('patterns scope filter', () => {
-  test('filters reflections by slug LIKE wiki/personal/reflections/%', () => {
-    expect(patternsSrc).toContain("slug LIKE 'wiki/personal/reflections/%'");
+  test('filters reflections by slug LIKE personal/reflections/%', () => {
+    expect(patternsSrc).toContain("slug LIKE 'personal/reflections/%'");
   });
 
   test('orders by updated_at DESC for recency-bias', () => {

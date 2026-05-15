@@ -513,8 +513,9 @@ OUTPUT POLICY (ALL of these are required)
 1. Quote fidelity is strict: use quotation marks ONLY for words copied exactly from the DIRECT-QUOTE SOURCE below. Everything else must be clearly written as paraphrase, summary, or inference without quotation marks.
 2. Before every put_page call, run a self-check: every double-quoted phrase in the markdown content must appear verbatim in the DIRECT-QUOTE SOURCE. If it does not, remove the quotation marks and label it as a paraphrase/inference.
 3. Cross-reference compulsively: every new page MUST contain at least one wikilink (e.g., \`[ref](people/jane-doe)\` or \`[[people/jane-doe]]\`) to existing brain content. Use the search tool to find existing pages first.
-4. Do NOT write to any path outside the allow-list shown in the put_page schema.
-5. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
+4. Before creating a reflection or idea page, search for the durable topic words you would put in the slug (for example: \`codex dream quality gate\`, \`steve proactive system hygiene\`). If an existing page covers the same topic, update that exact existing slug instead of creating a date/hash-suffixed duplicate.
+5. Do NOT write to any path outside the allow-list shown in the put_page schema.
+6. Slug discipline: lowercase alphanumeric and hyphens only, slash-separated segments. NO underscores, NO file extensions.
 
 TASKS
 A. Reflections (self-knowledge, pattern recognition, emotional processing):

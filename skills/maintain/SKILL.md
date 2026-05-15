@@ -96,10 +96,12 @@ lint -> backlinks -> sync -> synthesize -> extract -> patterns -> embed -> orpha
 The two new phases consolidate yesterday's conversations into long-term memory:
 
 **Synthesize phase:** reads transcripts from `dream.synthesize.session_corpus_dir`,
-runs a cheap Haiku verdict (cached in `dream_verdicts`) to filter routine
-ops sessions, then fans out one Sonnet subagent per worth-processing
-transcript. Each subagent writes reflections (`wiki/personal/reflections/...`),
-originals (`wiki/originals/ideas/...`), and people timeline entries. The
+runs a configured significance judge (cached in `dream_verdicts`) to filter
+routine ops sessions, then fans out one configured subagent per
+worth-processing transcript. Local Steve/OpenClaw setups should prefer the
+Ollama provider; Anthropic is legacy/explicit opt-in. Each subagent writes
+reflections (`personal/reflections/...`), originals (`ideas/...`), and people
+timeline entries. The
 orchestrator collects the slugs from `subagent_tool_executions` (NOT
 `pages.updated_at` — that would pick up unrelated writes) and reverse-renders
 each new page from DB → markdown on disk.
@@ -107,7 +109,7 @@ each new page from DB → markdown on disk.
 **Patterns phase:** runs after `extract` (so the graph state is fresh).
 Reads recent reflections within `dream.patterns.lookback_days` (default 30),
 runs a single Sonnet pass to surface recurring themes, and writes pattern
-pages to `wiki/personal/patterns/<theme>` when ≥`dream.patterns.min_evidence`
+pages to `personal/patterns/<theme>` when ≥`dream.patterns.min_evidence`
 (default 3) reflections support a pattern.
 
 **Quality bar (Iron Law for synthesis):**
@@ -115,6 +117,13 @@ pages to `wiki/personal/patterns/<theme>` when ≥`dream.patterns.min_evidence`
 2. Cross-reference compulsively: every new page MUST have at least one wikilink.
 3. Slug discipline: lowercase alphanumeric and hyphens only. NO underscores, NO file extensions.
 4. Edited transcripts produce NEW slugs (content-hash suffix changes) — never silently overwrite.
+5. Before accepting output, check for existing pages on the same topic and
+   prefer merge/update when appropriate; do not create duplicate-ish pages just
+   because the transcript hash differs.
+6. Future or hypothetical skills must be labeled as proposed, not described as
+   installed or runnable.
+7. Clean generated titles/frontmatter so transient hash suffixes do not leak
+   into human-facing titles.
 
 **Trust boundary (`allowed_slug_prefixes`):** the synthesis subagent runs with an
 explicit allow-list of write paths sourced from `_brain-filing-rules.json`'s
@@ -135,8 +144,8 @@ timestamp is stored in `dream.synthesize.last_completion_ts` and is written
 ONLY on successful runs (not on skipped/failed). Explicit `--input` /
 `--date` / `--from` / `--to` invocations bypass cooldown.
 
-**`--dry-run` semantics:** runs the cheap Haiku significance filter (caches
-verdicts) but skips the Sonnet synthesis pass. NOT zero LLM calls.
+**`--dry-run` semantics:** runs the configured significance filter (caches
+verdicts) but skips the synthesis subagent pass. NOT zero LLM calls.
 
 **Configure synthesize on a fresh brain:**
 ```bash
