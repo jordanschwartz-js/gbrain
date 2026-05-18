@@ -11,7 +11,10 @@ secrets:
     where: https://dashboard.ngrok.com/get-started/your-authtoken — sign up, then copy your authtoken
 health_checks:
   - type: command
-    argv: ["pgrep", "-f", "ngrok.*http"]
+    argv:
+      - pgrep
+      - -f
+      - ngrok.*http
     label: "ngrok process"
   - type: http
     url: "http://localhost:4040/api/tunnels"

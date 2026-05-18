@@ -6,7 +6,7 @@ import { resolveWhoknowsFixturePath, whoknowsHealthCheck } from '../src/commands
 import { withEnv } from './helpers/with-env.ts';
 
 /**
- * v0.33 whoknows_health doctor check — fixture-only assertion. The
+ * v0.33 whoknows_health doctor check -- fixture-only assertion. The
  * check resolves the shipped fixture from the module path unless
  * GBRAIN_WHOKNOWS_FIXTURE_PATH is set. It does NOT need an engine.
  * We pass a sentinel object cast to BrainEngine for the type contract
@@ -69,16 +69,24 @@ describe('whoknows_health doctor check', () => {
     }
   });
 
+  it('warns when explicit startDir fixture file is missing entirely', async () => {
+    try {
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
+      expect(check.name).toBe('whoknows_health');
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('fixture missing');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('warns when fixture exists but is empty', async () => {
     try {
-      const fixturePath = join(workDir, 'test/fixtures/whoknows-eval.jsonl');
-      mkdirSync(join(workDir, 'test/fixtures'), { recursive: true });
-      writeFileSync(fixturePath, '');
-      await withEnv({ GBRAIN_WHOKNOWS_FIXTURE_PATH: fixturePath }, async () => {
-        const check = await whoknowsHealthCheck(stubEngine);
-        expect(check.status).toBe('warn');
-        expect(check.message).toContain('empty');
-      });
+      mkdirSync('test/fixtures', { recursive: true });
+      writeFileSync('test/fixtures/whoknows-eval.jsonl', '');
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('empty');
     } finally {
       cleanup();
     }
@@ -86,18 +94,30 @@ describe('whoknows_health doctor check', () => {
 
   it('warns when fixture has fewer than 5 rows', async () => {
     try {
-      const fixturePath = join(workDir, 'test/fixtures/whoknows-eval.jsonl');
-      mkdirSync(join(workDir, 'test/fixtures'), { recursive: true });
+      mkdirSync('test/fixtures', { recursive: true });
       writeFileSync(
-        fixturePath,
+        'test/fixtures/whoknows-eval.jsonl',
         '{"query":"a","expected_top_3_slugs":["x"]}\n' +
           '{"query":"b","expected_top_3_slugs":["y"]}\n',
       );
-      await withEnv({ GBRAIN_WHOKNOWS_FIXTURE_PATH: fixturePath }, async () => {
-        const check = await whoknowsHealthCheck(stubEngine);
-        expect(check.status).toBe('warn');
-        expect(check.message).toContain('2 row');
-      });
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
+      expect(check.status).toBe('warn');
+      expect(check.message).toContain('2 row');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('uses explicit startDir when fixture has at least 5 rows', async () => {
+    try {
+      mkdirSync('test/fixtures', { recursive: true });
+      const rows = Array.from({ length: 10 }, (_, i) =>
+        JSON.stringify({ query: `q${i}`, expected_top_3_slugs: [`p${i}`] }),
+      ).join('\n');
+      writeFileSync('test/fixtures/whoknows-eval.jsonl', rows + '\n');
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
+      expect(check.status).toBe('ok');
+      expect(check.message).toContain('10 queries');
     } finally {
       cleanup();
     }
@@ -105,16 +125,15 @@ describe('whoknows_health doctor check', () => {
 
   it('honors env override when fixture has at least 5 rows', async () => {
     try {
-      const fixturePath = join(workDir, 'test/fixtures/whoknows-eval.jsonl');
-      mkdirSync(join(workDir, 'test/fixtures'), { recursive: true });
-      const rows = Array.from({ length: 10 }, (_, i) =>
-        JSON.stringify({ query: `q${i}`, expected_top_3_slugs: [`p${i}`] }),
+      const fixturePath = join(workDir, 'custom-whoknows-eval.jsonl');
+      const rows = Array.from({ length: 6 }, (_, i) =>
+        JSON.stringify({ query: `env${i}`, expected_top_3_slugs: [`p${i}`] }),
       ).join('\n');
       writeFileSync(fixturePath, rows + '\n');
       await withEnv({ GBRAIN_WHOKNOWS_FIXTURE_PATH: fixturePath }, async () => {
         const check = await whoknowsHealthCheck(stubEngine);
         expect(check.status).toBe('ok');
-        expect(check.message).toContain('10 queries');
+        expect(check.message).toContain('6 queries');
       });
     } finally {
       cleanup();
@@ -123,8 +142,7 @@ describe('whoknows_health doctor check', () => {
 
   it('ignores comment lines and blank lines when counting rows', async () => {
     try {
-      const fixturePath = join(workDir, 'test/fixtures/whoknows-eval.jsonl');
-      mkdirSync(join(workDir, 'test/fixtures'), { recursive: true });
+      mkdirSync('test/fixtures', { recursive: true });
       const content = [
         '# comment',
         '// another comment',
@@ -135,12 +153,10 @@ describe('whoknows_health doctor check', () => {
         '{"query":"d","expected_top_3_slugs":["w"]}',
         '{"query":"e","expected_top_3_slugs":["v"]}',
       ].join('\n');
-      writeFileSync(fixturePath, content + '\n');
-      await withEnv({ GBRAIN_WHOKNOWS_FIXTURE_PATH: fixturePath }, async () => {
-        const check = await whoknowsHealthCheck(stubEngine);
-        expect(check.status).toBe('ok');
-        expect(check.message).toContain('5 queries');
-      });
+      writeFileSync('test/fixtures/whoknows-eval.jsonl', content + '\n');
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
+      expect(check.status).toBe('ok');
+      expect(check.message).toContain('5 queries');
     } finally {
       cleanup();
     }

@@ -54,6 +54,44 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
   return { schema_version: 2, status, health_score: score, checks };
 }
 
+type DoctorSourceRow = {
+  id: string;
+  local_path: string | null;
+  config?: unknown;
+};
+
+function parseSourceConfig(config: unknown): Record<string, unknown> {
+  if (!config) return {};
+  if (typeof config === 'string') {
+    try {
+      const parsed = JSON.parse(config);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
+  }
+  if (Array.isArray(config)) {
+    for (let i = config.length - 1; i >= 0; i--) {
+      const parsed = parseSourceConfig(config[i]);
+      if (Object.keys(parsed).length > 0) return parsed;
+    }
+    return {};
+  }
+  return typeof config === 'object' ? config as Record<string, unknown> : {};
+}
+
+function isCodeSource(src: Pick<DoctorSourceRow, 'config'>): boolean {
+  const cfg = parseSourceConfig(src.config);
+  return cfg.source_kind === 'code' || cfg.strategy === 'code' || cfg.sync_strategy === 'code';
+}
+
+function isFrontmatterEnforcedSource(src: Pick<DoctorSourceRow, 'id' | 'config'>): boolean {
+  if (src.id === 'default') return true;
+  const cfg = parseSourceConfig(src.config);
+  if (isCodeSource(src)) return false;
+  return cfg.federated === true;
+}
+
 /**
  * Focused doctor for `run_doctor` MCP op + `gbrain remote doctor` CLI.
  *
@@ -132,15 +170,31 @@ export function resolveWhoknowsFixturePath(
  * regression detection lives in `gbrain eval whoknows --json` and is
  * the job of the eval command, not the doctor sweep.
  */
-export async function whoknowsHealthCheck(_engine: BrainEngine): Promise<Check> {
+export async function whoknowsHealthCheck(
+  _engine: BrainEngine,
+  opts: { startDir?: string; allowInstallFallback?: boolean } = {},
+): Promise<Check> {
   try {
-    const fixturePath = resolveWhoknowsFixturePath();
-    if (!fixturePath) {
-      return {
-        name: 'whoknows_health',
-        status: 'warn',
-        message: 'whoknows eval fixture path could not be resolved. Set GBRAIN_WHOKNOWS_FIXTURE_PATH to the absolute path for test/fixtures/whoknows-eval.jsonl.',
-      };
+    let fixturePath: string | null;
+    if (opts.startDir) {
+      const cwdFixturePath = join(opts.startDir, WHOKNOWS_FIXTURE_RELATIVE_PATH);
+      fixturePath = cwdFixturePath;
+      if (!existsSync(cwdFixturePath) && opts.allowInstallFallback !== false) {
+        const detected = autoDetectSkillsDirReadOnly(opts.startDir);
+        if (detected.dir) {
+          const installFixturePath = join(dirname(detected.dir), WHOKNOWS_FIXTURE_RELATIVE_PATH);
+          if (existsSync(installFixturePath)) fixturePath = installFixturePath;
+        }
+      }
+    } else {
+      fixturePath = resolveWhoknowsFixturePath();
+      if (!fixturePath) {
+        return {
+          name: 'whoknows_health',
+          status: 'warn',
+          message: 'whoknows eval fixture path could not be resolved. Set GBRAIN_WHOKNOWS_FIXTURE_PATH to the absolute path for test/fixtures/whoknows-eval.jsonl.',
+        };
+      }
     }
     if (!existsSync(fixturePath)) {
       return {
@@ -465,10 +519,10 @@ export async function doctorReportRemote(engine: BrainEngine): Promise<DoctorRep
   // returned to the thin-client over MCP.
   try {
     const { findMisroutedPages } = await import('../core/multi-source-drift.ts');
-    const sources = await engine.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources`,
+    const sources = await engine.executeRaw<DoctorSourceRow>(
+      `SELECT id, local_path, config FROM sources`,
     );
-    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path);
+    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path && !isCodeSource(s));
     if (sources.length > 1 && nonDefaultWithPath.length > 0) {
       const result = await findMisroutedPages(
         engine,
@@ -1623,10 +1677,10 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   // bail silently here when engine is null since the check needs DB access.
   if (engine !== null) try {
     const { findMisroutedPages } = await import('../core/multi-source-drift.ts');
-    const sources = await engine!.executeRaw<{ id: string; local_path: string | null }>(
-      `SELECT id, local_path FROM sources`,
+    const sources = await engine!.executeRaw<DoctorSourceRow>(
+      `SELECT id, local_path, config FROM sources`,
     );
-    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path);
+    const nonDefaultWithPath = sources.filter(s => s.id !== 'default' && s.local_path && !isCodeSource(s));
     if (sources.length > 1 && nonDefaultWithPath.length > 0) {
       const result = await findMisroutedPages(
         engine!,
@@ -2487,18 +2541,29 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   try {
     const { scanBrainSources } = await import('../core/brain-writer.ts');
     const report = await scanBrainSources(engine);
-    if (report.total === 0) {
+    const sourceRows = await engine.executeRaw<DoctorSourceRow>(
+      `SELECT id, local_path, config FROM sources`,
+    );
+    const sourceById = new Map(sourceRows.map(s => [s.id, s]));
+    const enforcedReports = report.per_source.filter(src =>
+      isFrontmatterEnforcedSource(sourceById.get(src.source_id) ?? { id: src.source_id, config: {} }),
+    );
+    const enforcedTotal = enforcedReports.reduce((sum, src) => sum + src.total, 0);
+    const ignoredTotal = report.total - enforcedTotal;
+    if (enforcedTotal === 0) {
       const sources = report.per_source.length;
       checks.push({
         name: 'frontmatter_integrity',
         status: 'ok',
         message: sources === 0
           ? 'No registered sources to scan'
-          : `${sources} source(s) clean — no frontmatter issues`,
+          : ignoredTotal > 0
+            ? `Frontmatter-clean enforced sources; ignored ${ignoredTotal} issue(s) in code or isolated corpus sources`
+            : `${sources} source(s) clean — no frontmatter issues`,
       });
     } else {
       const sourceMessages: string[] = [];
-      for (const src of report.per_source) {
+      for (const src of enforcedReports) {
         if (src.total === 0) continue;
         const codes = Object.entries(src.errors_by_code)
           .map(([k, v]) => `${k}=${v}`)
@@ -2509,7 +2574,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
         name: 'frontmatter_integrity',
         status: 'warn',
         message:
-          `${report.total} frontmatter issue(s) across ${sourceMessages.length} source(s). ` +
+          `${enforcedTotal} frontmatter issue(s) across ${sourceMessages.length} enforced source(s). ` +
           `${sourceMessages.join('; ')}. Fix: gbrain frontmatter validate <source-path> --fix`,
       });
     }

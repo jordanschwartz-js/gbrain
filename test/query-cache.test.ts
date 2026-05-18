@@ -219,6 +219,20 @@ describe('SemanticQueryCache \u2014 management', () => {
     expect(stats.total_rows).toBe(0);
   });
 
+  test('clear({ sourceId }) wipes only that source', async () => {
+    const cache = new SemanticQueryCache(engine);
+    const embA = makeEmbedding(91);
+    const embB = makeEmbedding(92);
+
+    await cache.store('q-a', embA, [makeResult('a')], META, { sourceId: 'src-A' });
+    await cache.store('q-b', embB, [makeResult('b')], META, { sourceId: 'src-B' });
+
+    const removed = await cache.clear({ sourceId: 'src-A' });
+    expect(removed).toBe(1);
+    expect((await cache.lookup(embA, { sourceId: 'src-A' })).hit).toBe(false);
+    expect((await cache.lookup(embB, { sourceId: 'src-B' })).hit).toBe(true);
+  });
+
   test('prune() deletes only stale rows', async () => {
     const cache = new SemanticQueryCache(engine);
     await cache.store('fresh', makeEmbedding(11), [makeResult('a')], META);

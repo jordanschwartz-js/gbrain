@@ -16,7 +16,8 @@ health_checks:
     headers:
       Authorization: "Bearer $CIRCLEBACK_TOKEN"
       Content-Type: "application/json"
-    body: '{"jsonrpc":"2.0","method":"tools/list","id":1}'
+    body: >-
+      {"jsonrpc":"2.0","method":"tools/list","id":1}
     label: "Circleback API"
 setup_time: 15 min
 cost_estimate: "$0-17/mo (Circleback free for 10 meetings/mo, Pro $17/mo unlimited)"

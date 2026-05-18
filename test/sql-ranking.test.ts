@@ -211,6 +211,15 @@ describe('resolveBoostMap', () => {
     expect(resolveBoostMap(undefined)).toEqual(DEFAULT_SOURCE_BOOSTS);
   });
 
+  test('defaults favor curated operator docs over transcripts', () => {
+    const boosts = resolveBoostMap(undefined);
+    expect(boosts['people/']).toBeGreaterThan(1);
+    expect(boosts['systems/openclaw-stack/steve/']).toBeGreaterThan(1);
+    expect(boosts['systems/openclaw-stack/components/']).toBeGreaterThan(1);
+    expect(boosts['transcripts/']).toBeLessThan(1);
+    expect(boosts['systems/openclaw-stack/log']).toBeLessThan(1);
+  });
+
   test('env override takes precedence over defaults', () => {
     const merged = resolveBoostMap('originals/:99');
     expect(merged['originals/']).toBe(99);

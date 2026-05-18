@@ -30,6 +30,7 @@ import { tryAcquireDbLock, SYNC_LOCK_ID } from '../core/db-lock.ts';
 import { loadStorageConfig } from '../core/storage-config.ts';
 import { getDefaultSourcePath } from '../core/source-resolver.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
+import { SemanticQueryCache } from '../core/search/query-cache.ts';
 
 export interface SyncResult {
   status: 'up_to_date' | 'synced' | 'first_sync' | 'dry_run' | 'blocked_by_failures';
@@ -933,6 +934,14 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
     pages_updated: pagesAffected,
     summary: `Sync: +${filtered.added.length} ~${filtered.modified.length} -${filtered.deleted.length} R${filtered.renamed.length}, ${chunksCreated} chunks, ${elapsed}ms`,
   });
+
+  if (pagesAffected.length > 0) {
+    try {
+      await new SemanticQueryCache(engine).clear({ sourceId: opts.sourceId ?? 'default' });
+    } catch {
+      // Cache invalidation is best-effort; sync success must not depend on it.
+    }
+  }
 
   // Auto-extract links + timeline (always, extraction is cheap CPU).
   // Thread opts.sourceId so the extract phase reconciles edges + timeline

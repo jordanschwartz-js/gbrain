@@ -20,6 +20,7 @@ import {
   clearCheckpoint,
   resumeFilter,
 } from '../core/import-checkpoint.ts';
+import { SemanticQueryCache } from '../core/search/query-cache.ts';
 
 function defaultWorkers(): number {
   const cpuCount = cpus().length;
@@ -302,6 +303,16 @@ export async function runImport(
     pages_updated: importedSlugs,
     summary: `Imported ${imported} pages, ${skipped} skipped, ${chunksCreated} chunks`,
   });
+
+  // Imported source text changes the answerable corpus immediately. Query
+  // cache entries are result snapshots, so clear this source after writes.
+  if (imported > 0) {
+    try {
+      await new SemanticQueryCache(engine).clear({ sourceId: sourceId ?? 'default' });
+    } catch {
+      // Cache invalidation is best-effort; import success must not depend on it.
+    }
+  }
 
   // Import → sync continuity: write sync checkpoint if this is a git repo.
   // Bug 9 — gate last_commit on "no failures" so import doesn't silently

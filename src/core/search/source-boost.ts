@@ -21,9 +21,16 @@ export const DEFAULT_SOURCE_BOOSTS: Record<string, number> = {
   // Long-form essays / articles
   'writing/': 1.4,
   // Entity pages
-  'people/': 1.2,
+  'people/': 1.4,
   'companies/': 1.2,
   'deals/': 1.2,
+  // Curated system/operator docs should beat raw transcripts for durable
+  // "what do we know / what is the policy" assistant questions.
+  'systems/openclaw-stack/steve/': 1.35,
+  'systems/openclaw-stack/components/': 1.3,
+  'systems/openclaw-stack/runbooks/': 1.3,
+  'systems/openclaw-stack/decisions': 1.25,
+  'systems/codex/': 1.25,
   // Notes from real meetings
   'meetings/': 1.1,
   // Ingested third-party content
@@ -35,6 +42,8 @@ export const DEFAULT_SOURCE_BOOSTS: Record<string, number> = {
   // Bulk / noisy
   'daily/': 0.8,
   'media/x/': 0.7,
+  'transcripts/': 0.45,
+  'systems/openclaw-stack/log': 0.75,
   // Chat transcripts — massive, noisy, swamp keyword queries
   'openclaw/chat/': 0.5,
 };
