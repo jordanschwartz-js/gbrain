@@ -31,6 +31,8 @@ import { loadStorageConfig } from '../core/storage-config.ts';
 import { getDefaultSourcePath } from '../core/source-resolver.ts';
 import { sortNewestFirst } from '../core/sort-newest-first.ts';
 
+type SyncStrategy = NonNullable<SyncOpts['strategy']>;
+
 export interface SyncResult {
   status: 'up_to_date' | 'synced' | 'first_sync' | 'dry_run' | 'blocked_by_failures';
   fromCommit: string | null;
@@ -161,6 +163,57 @@ export interface SyncOpts {
    * v0.22.13 (PR #490 CODEX-2). Not part of the public CLI surface.
    */
   skipLock?: boolean;
+}
+
+function parseSourceConfig(config: unknown): Record<string, unknown> {
+  if (!config) return {};
+  if (typeof config === 'string') {
+    try {
+      const parsed = JSON.parse(config);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof config === 'object' && !Array.isArray(config)
+    ? config as Record<string, unknown>
+    : {};
+}
+
+function parseSyncStrategy(value: unknown): SyncStrategy | undefined {
+  return value === 'markdown' || value === 'code' || value === 'auto'
+    ? value
+    : undefined;
+}
+
+async function readSourceStrategy(
+  engine: BrainEngine,
+  sourceId: string | undefined,
+): Promise<SyncStrategy | undefined> {
+  if (!sourceId) return undefined;
+  const rows = await engine.executeRaw<{ config: unknown }>(
+    `SELECT config FROM sources WHERE id = $1`,
+    [sourceId],
+  );
+  return parseSyncStrategy(parseSourceConfig(rows[0]?.config).strategy);
+}
+
+async function persistSourceStrategy(
+  engine: BrainEngine,
+  sourceId: string | undefined,
+  strategy: SyncStrategy | undefined,
+): Promise<void> {
+  if (!sourceId || !strategy) return;
+  const patch: Record<string, unknown> = { strategy };
+  if (strategy === 'code') patch.source_kind = 'code';
+  await engine.executeRaw(
+    `UPDATE sources
+       SET config = COALESCE(config, '{}'::jsonb) || $1::jsonb
+     WHERE id = $2`,
+    [JSON.stringify(patch), sourceId],
+  );
 }
 
 /**
@@ -398,6 +451,10 @@ async function performSyncInner(engine: BrainEngine, opts: SyncOpts): Promise<Sy
       ? `Source "${opts.sourceId}" has no local_path. Run: gbrain sources add ${opts.sourceId} --path <path>`
       : `No repo path specified. Use --repo or run gbrain init with --repo first.`;
     throw new Error(hint);
+  }
+
+  if (!opts.dryRun) {
+    await persistSourceStrategy(engine, opts.sourceId, opts.strategy);
   }
 
   // v0.28: source-aware re-clone branch. When the source has a remote_url
@@ -1301,7 +1358,8 @@ export async function runSync(engine: BrainEngine, args: string[]) {
     return;
   }
 
-  const opts: SyncOpts = { repoPath, dryRun, full, noPull, noEmbed, skipFailed, retryFailed, sourceId, strategy: strategyArg, concurrency };
+  const effectiveStrategy = strategyArg ?? await readSourceStrategy(engine, sourceId);
+  const opts: SyncOpts = { repoPath, dryRun, full, noPull, noEmbed, skipFailed, retryFailed, sourceId, strategy: effectiveStrategy, concurrency };
 
   // Bug 9 — --retry-failed: before running normal sync, clear acknowledgment
   // flags so the sync picks them up as fresh work. The actual re-attempt
@@ -1327,7 +1385,10 @@ export async function runSync(engine: BrainEngine, args: string[]) {
     // fires in the common case where the user runs `gbrain sync` without
     // passing --repo every time.
     if (result.status !== 'dry_run' && result.status !== 'blocked_by_failures') {
-      const effectiveRepoPath = opts.repoPath ?? (await getDefaultSourcePath(engine));
+      const effectiveRepoPath = opts.repoPath ??
+        (opts.sourceId
+          ? await readSyncAnchor(engine, opts.sourceId, 'repo_path')
+          : await getDefaultSourcePath(engine));
       if (effectiveRepoPath) {
         manageGitignore(effectiveRepoPath, engine.kind);
       }
@@ -1350,7 +1411,10 @@ export async function runSync(engine: BrainEngine, args: string[]) {
       // Same gate as non-watch: only manage .gitignore on successful sync.
       // Same repo-resolution path so watch mode catches the implicit-resolved case.
       if (result.status !== 'dry_run' && result.status !== 'blocked_by_failures') {
-        const effectiveRepoPath = opts.repoPath ?? (await getDefaultSourcePath(engine));
+        const effectiveRepoPath = opts.repoPath ??
+          (opts.sourceId
+            ? await readSyncAnchor(engine, opts.sourceId, 'repo_path')
+            : await getDefaultSourcePath(engine));
         if (effectiveRepoPath) {
           manageGitignore(effectiveRepoPath, engine.kind);
         }

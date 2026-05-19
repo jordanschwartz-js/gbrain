@@ -456,6 +456,52 @@ describe('performSync dry-run never writes', () => {
     expect(typeof result.embedded).toBe('number');
   });
 
+  test('source sync persists explicit code strategy on the source row', async () => {
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config) VALUES ('code-src', 'Code Src', $1, '{}'::jsonb)`,
+      [repoPath],
+    );
+
+    const { performSync } = await import('../src/commands/sync.ts');
+    await performSync(engine, {
+      repoPath,
+      sourceId: 'code-src',
+      strategy: 'code',
+      noPull: true,
+      noEmbed: true,
+      noExtract: true,
+    });
+
+    const rows = await engine.executeRaw<{ config: Record<string, unknown> | string }>(
+      `SELECT config FROM sources WHERE id = 'code-src'`,
+    );
+    const cfg = typeof rows[0].config === 'string'
+      ? JSON.parse(rows[0].config)
+      : rows[0].config;
+    expect(cfg.strategy).toBe('code');
+    expect(cfg.source_kind).toBe('code');
+  });
+
+  test('CLI source sync reuses persisted code strategy when no flag is passed', async () => {
+    mkdirSync(join(repoPath, 'src'), { recursive: true });
+    writeFileSync(join(repoPath, 'src', 'demo.ts'), 'export function demo() { return 1; }\n');
+    execSync('git add -A && git commit -m "add code"', { cwd: repoPath, stdio: 'pipe' });
+
+    await engine.executeRaw(
+      `INSERT INTO sources (id, name, local_path, config) VALUES ('code-src', 'Code Src', $1, $2::jsonb)`,
+      [repoPath, JSON.stringify({ strategy: 'code', source_kind: 'code' })],
+    );
+
+    const { runSync } = await import('../src/commands/sync.ts');
+    await runSync(engine, ['--source', 'code-src', '--no-pull', '--no-embed']);
+
+    const rows = await engine.executeRaw<{ slug: string; page_kind: string }>(
+      `SELECT slug, page_kind FROM pages WHERE source_id = 'code-src' ORDER BY slug`,
+    );
+    expect(rows.some(r => r.slug === 'src-demo-ts' && r.page_kind === 'code')).toBe(true);
+    expect(rows.some(r => r.slug === 'people/alice')).toBe(false);
+  });
+
   test('detached HEAD skips git pull and ingests local working-tree files', async () => {
     const { performSync } = await import('../src/commands/sync.ts');
     const seeded = await performSync(engine, {
