@@ -54,6 +54,49 @@ export function computeDoctorReport(checks: Check[]): DoctorReport {
   return { schema_version: 2, status, health_score: score, checks };
 }
 
+export function graphCoverageCheckFromHealth(
+  health: { link_coverage?: number; timeline_coverage?: number },
+  entityCount: number,
+): Check {
+  const linkPct = ((health.link_coverage ?? 0) * 100).toFixed(0);
+  const timelinePct = ((health.timeline_coverage ?? 0) * 100).toFixed(0);
+
+  if (entityCount === 0) {
+    // Markdown-only / journal / wiki brain — no entity pages to compute
+    // coverage against. Coverage formula is structurally inapplicable.
+    return {
+      name: 'graph_coverage',
+      status: 'ok',
+      message: 'No entity pages — graph_coverage not applicable (markdown-only brain)',
+    };
+  }
+
+  if ((health.link_coverage ?? 0) >= 0.5 && (health.timeline_coverage ?? 0) >= 0.5) {
+    return { name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%` };
+  }
+
+  const guidance: string[] = [];
+  if ((health.link_coverage ?? 0) < 0.5) {
+    guidance.push(
+      'Review link extraction: gbrain extract links --source db --dry-run --include-frontmatter; ' +
+      'if it adds little, author relationship links/backlinks on entity pages',
+    );
+  }
+  if ((health.timeline_coverage ?? 0) < 0.5) {
+    guidance.push(
+      'Review scoped timeline extraction: gbrain extract timeline --source db --dry-run --type person',
+    );
+  }
+
+  return {
+    name: 'graph_coverage',
+    status: 'warn',
+    message:
+      `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). ` +
+      guidance.join('; '),
+  };
+}
+
 type DoctorSourceRow = {
   id: string;
   local_path: string | null;
@@ -2069,7 +2112,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
     const {
       getEmbeddingModel,
       getEmbeddingDimensions,
-      embedOne,
+      embed,
       isAvailable,
     } = await import('../core/ai/gateway.ts');
 
@@ -2088,41 +2131,105 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
         message: `Skipped (no provider credentials). Model: ${configuredModel}.`,
       });
     } else {
-      // Live embed test
-      const start = Date.now();
-      const vec = await embedOne('gbrain doctor embedding smoke test');
-      const ms = Date.now() - start;
-      const actualDims = vec.length;
+      if (configuredModel.startsWith('ollama:')) {
+        const modelId = configuredModel.split(':').slice(1).join(':');
+        const baseUrl = (process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434')
+          .replace(/\/v1\/?$/, '')
+          .replace(/\/$/, '');
+        const issues: string[] = [];
 
-      const issues: string[] = [];
-
-      // Check dimensions match config
-      if (actualDims !== configuredDims) {
-        issues.push(`Dimension mismatch: provider returned ${actualDims} but config expects ${configuredDims}`);
-      }
-
-      // Check DB column dimensions match (engine-portable; works on both
-      // Postgres and PGLite via the shared dim-check helper added in v0.28.5).
-      try {
-        const { readContentChunksEmbeddingDim } = await import('../core/embedding-dim-check.ts');
-        const colDim = await readContentChunksEmbeddingDim(engine);
-        if (colDim.exists && colDim.dims !== null && colDim.dims !== actualDims) {
-          issues.push(`DB dimension mismatch: column is vector(${colDim.dims}) but provider returns ${actualDims}-dim. See docs/embedding-migrations.md for the manual ALTER recipe.`);
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 2_000);
+          try {
+            const res = await fetch(`${baseUrl}/api/tags`, { signal: controller.signal });
+            if (!res.ok) {
+              issues.push(`Ollama tags probe returned HTTP ${res.status}`);
+            } else {
+              const body: any = await res.json();
+              const models = Array.isArray(body?.models) ? body.models : [];
+              const installed = models.some((m: any) => m?.name === modelId || m?.model === modelId);
+              if (!installed) issues.push(`Ollama model ${modelId} is not installed`);
+            }
+          } finally {
+            clearTimeout(timeout);
+          }
+        } catch (e: any) {
+          issues.push(`Ollama model registry probe failed: ${e.message?.slice(0, 120) ?? e}`);
         }
-      } catch { /* column or table missing — fresh brain, fine */ }
 
-      if (issues.length > 0) {
-        checks.push({
-          name: 'embedding_provider',
-          status: 'warn',
-          message: `${configuredModel} responds (${ms}ms, ${actualDims} dims) but: ${issues.join('; ')}`,
-        });
+        try {
+          const { readContentChunksEmbeddingDim } = await import('../core/embedding-dim-check.ts');
+          const colDim = await readContentChunksEmbeddingDim(engine);
+          if (colDim.exists && colDim.dims !== null && colDim.dims !== configuredDims) {
+            issues.push(`DB dimension mismatch: column is vector(${colDim.dims}) but config expects ${configuredDims}-dim. See docs/embedding-migrations.md for the manual ALTER recipe.`);
+          }
+        } catch { /* column or table missing — fresh brain, fine */ }
+
+        if (issues.length > 0) {
+          checks.push({
+            name: 'embedding_provider',
+            status: 'warn',
+            message: `${configuredModel} configured (${configuredDims} dims) but: ${issues.join('; ')}`,
+          });
+        } else {
+          checks.push({
+            name: 'embedding_provider',
+            status: 'ok',
+            message: `${configuredModel} installed, config ${configuredDims} dims, DB aligned; skipped live vector probe for local Ollama`,
+          });
+        }
       } else {
-        checks.push({
-          name: 'embedding_provider',
-          status: 'ok',
-          message: `${configuredModel} ✓ ${ms}ms, ${actualDims} dims, DB aligned`,
-        });
+        // Live embed test
+        const start = Date.now();
+        const controller = new AbortController();
+        const timeoutMs = 45_000;
+        const timeout = setTimeout(
+          () => controller.abort(new Error(`embedding provider probe timed out after ${timeoutMs / 1000}s`)),
+          timeoutMs,
+        );
+        let vec: Float32Array;
+        try {
+          [vec] = await embed(
+            ['gbrain doctor embedding smoke test'],
+            { abortSignal: controller.signal, maxRetries: 0 },
+          );
+        } finally {
+          clearTimeout(timeout);
+        }
+        const ms = Date.now() - start;
+        const actualDims = vec.length;
+
+        const issues: string[] = [];
+
+        // Check dimensions match config
+        if (actualDims !== configuredDims) {
+          issues.push(`Dimension mismatch: provider returned ${actualDims} but config expects ${configuredDims}`);
+        }
+
+        // Check DB column dimensions match (engine-portable; works on both
+        // Postgres and PGLite via the shared dim-check helper added in v0.28.5).
+        try {
+          const { readContentChunksEmbeddingDim } = await import('../core/embedding-dim-check.ts');
+          const colDim = await readContentChunksEmbeddingDim(engine);
+          if (colDim.exists && colDim.dims !== null && colDim.dims !== actualDims) {
+            issues.push(`DB dimension mismatch: column is vector(${colDim.dims}) but provider returns ${actualDims}-dim. See docs/embedding-migrations.md for the manual ALTER recipe.`);
+          }
+        } catch { /* column or table missing — fresh brain, fine */ }
+
+        if (issues.length > 0) {
+          checks.push({
+            name: 'embedding_provider',
+            status: 'warn',
+            message: `${configuredModel} responds (${ms}ms, ${actualDims} dims) but: ${issues.join('; ')}`,
+          });
+        } else {
+          checks.push({
+            name: 'embedding_provider',
+            status: 'ok',
+            message: `${configuredModel} ✓ ${ms}ms, ${actualDims} dims, DB aligned`,
+          });
+        }
       }
     }
   } catch (e: any) {
@@ -2341,25 +2448,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
       "SELECT COUNT(*)::int AS count FROM pages WHERE type IN ('entity', 'person', 'company', 'organization')",
     ))[0]?.count ?? 0;
 
-    const linkPct = ((health.link_coverage ?? 0) * 100).toFixed(0);
-    const timelinePct = ((health.timeline_coverage ?? 0) * 100).toFixed(0);
-    if (entityCount === 0) {
-      // Markdown-only / journal / wiki brain — no entity pages to compute
-      // coverage against. Coverage formula is structurally inapplicable.
-      checks.push({
-        name: 'graph_coverage',
-        status: 'ok',
-        message: 'No entity pages — graph_coverage not applicable (markdown-only brain)',
-      });
-    } else if ((health.link_coverage ?? 0) >= 0.5 && (health.timeline_coverage ?? 0) >= 0.5) {
-      checks.push({ name: 'graph_coverage', status: 'ok', message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}%` });
-    } else {
-      checks.push({
-        name: 'graph_coverage',
-        status: 'warn',
-        message: `Entity link coverage ${linkPct}%, timeline ${timelinePct}% (${entityCount} entity pages). Run: gbrain extract all`,
-      });
-    }
+    checks.push(graphCoverageCheckFromHealth(health, entityCount));
 
     // Bug 11 — brain_score breakdown. When the total is < 100, show which
     // components contributed the deficit so users know what to fix.

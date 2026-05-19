@@ -205,6 +205,13 @@ describe('gbrain extract timeline --source db', () => {
       timeline: '- **2026-01-15** | Test event',
     });
 
+    let addTimelineBatchCalled = false;
+    const originalAddTimeline = engine.addTimelineEntriesBatch.bind(engine);
+    (engine as unknown as { addTimelineEntriesBatch: typeof originalAddTimeline }).addTimelineEntriesBatch = async (...args) => {
+      addTimelineBatchCalled = true;
+      return originalAddTimeline(...args);
+    };
+
     const lines: string[] = [];
     const originalWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = ((chunk: string | Uint8Array): boolean => {
@@ -216,6 +223,7 @@ describe('gbrain extract timeline --source db', () => {
       await runExtract(engine, ['timeline', '--source', 'db', '--dry-run', '--json']);
     } finally {
       process.stdout.write = originalWrite;
+      (engine as unknown as { addTimelineEntriesBatch: typeof originalAddTimeline }).addTimelineEntriesBatch = originalAddTimeline;
     }
 
     const jsonLines = lines.filter(l => l.trim().startsWith('{'));
@@ -226,6 +234,7 @@ describe('gbrain extract timeline --source db', () => {
     expect(parsed.summary).toBe('Test event');
 
     const entries = await engine.getTimeline('people/alice');
+    expect(addTimelineBatchCalled).toBe(false);
     expect(entries.length).toBe(0);
   });
 });

@@ -208,16 +208,40 @@ describe('doctor command', () => {
   // link-extract` / `gbrain timeline-extract`) that were removed in v0.16
   // when extraction was consolidated into `gbrain extract <links|timeline|all>`.
   // PR #376 (FUSED-ID) flagged the stale hint; PR #536 (mayazbay) replaced it
-  // with the canonical `gbrain extract all`. Pin the user-facing copy so a
-  // future edit can't silently re-regress to a stale verb.
-  test('graph_coverage hint uses canonical `gbrain extract all`, not removed verbs', async () => {
-    const fs = await import('fs');
-    const src = fs.readFileSync('src/commands/doctor.ts', 'utf8');
-    // Canonical form (post-v0.16 single-verb consolidation).
-    expect(src).toContain('Run: gbrain extract all');
+  // with the canonical `gbrain extract all`. v0.36 narrowed the timeline
+  // guidance to a dry-run/entity-scoped form because live brains can also
+  // index code pages, where broad timeline extraction is noisy. Link extraction
+  // stays unscoped because link_coverage measures inbound links to entity
+  // pages, and frontmatter can carry relationship edges.
+  test('graph_coverage hint uses unscoped links and scoped timeline dry runs, not removed verbs', async () => {
+    const { graphCoverageCheckFromHealth } = await import('../src/commands/doctor.ts');
+    const check = graphCoverageCheckFromHealth({ link_coverage: 0.12, timeline_coverage: 0.4 }, 231);
+
+    expect(check.name).toBe('graph_coverage');
+    expect(check.status).toBe('warn');
+    expect(check.message).toContain('gbrain extract links --source db --dry-run --include-frontmatter');
+    expect(check.message).toContain('gbrain extract timeline --source db --dry-run --type person');
+    expect(check.message).toContain('author relationship links/backlinks on entity pages');
+    expect(check.message).not.toContain('gbrain extract all --source db --dry-run --type person');
+
+    const src = await Bun.file(new URL('../src/commands/doctor.ts', import.meta.url)).text();
     // Stale verb names removed in v0.16 must not return.
     expect(src).not.toContain('gbrain link-extract');
     expect(src).not.toContain('gbrain timeline-extract');
+  });
+
+  test('graph_coverage hint only names weak coverage components', async () => {
+    const { graphCoverageCheckFromHealth } = await import('../src/commands/doctor.ts');
+
+    const linkOnly = graphCoverageCheckFromHealth({ link_coverage: 0.12, timeline_coverage: 0.94 }, 231);
+    expect(linkOnly.status).toBe('warn');
+    expect(linkOnly.message).toContain('gbrain extract links --source db --dry-run --include-frontmatter');
+    expect(linkOnly.message).not.toContain('gbrain extract timeline');
+
+    const timelineOnly = graphCoverageCheckFromHealth({ link_coverage: 0.75, timeline_coverage: 0.2 }, 231);
+    expect(timelineOnly.status).toBe('warn');
+    expect(timelineOnly.message).toContain('gbrain extract timeline --source db --dry-run --type person');
+    expect(timelineOnly.message).not.toContain('gbrain extract links');
   });
 
   // v0.32 — takes_weight_grid pure-helper export.

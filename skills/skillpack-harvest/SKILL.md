@@ -13,6 +13,12 @@ triggers:
   - "lift this skill upstream"
   - "share this skill with other gbrain clients"
   - "promote my skill to gbrain"
+  - "lift this skill"
+  - "skill upstream"
+  - "gbrain bundle"
+  - "harvest my skill"
+  - "promote this skill"
+  - "custom skill into the gbrain core"
 mutating: true
 writes_pages: false
 writes_to:

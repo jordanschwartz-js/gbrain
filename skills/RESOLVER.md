@@ -59,7 +59,7 @@ This is the dispatcher. Skills are the implementation. **Read the skill file bef
 | "Skillify this", "is this a skill?", "make this proper" | `skills/skillify/SKILL.md` |
 | "Compress my resolver", "AGENTS.md too large", "RESOLVER.md too big", "functional area dispatcher", "shrink routing table" | `skills/functional-area-resolver/SKILL.md` |
 | "Is gbrain healthy?", morning health check, skillpack-check | `skills/skillpack-check/SKILL.md` |
-| "harvest this skill into gbrain", "publish this skill to gbrain", "lift this skill upstream", "share this skill with other gbrain clients", "promote my skill to gbrain" | `skills/skillpack-harvest/SKILL.md` |
+| "harvest this skill into gbrain", "publish this skill to gbrain", "lift this skill upstream", "share this skill with other gbrain clients", "promote my skill to gbrain", "lift this skill", "skill upstream", "gbrain bundle", "harvest my skill", "promote this skill", "custom skill into the gbrain core" | `skills/skillpack-harvest/SKILL.md` |
 | Post-restart health + auto-fix, "did the container restart break anything", smoke test | `skills/smoke-test/SKILL.md` |
 | Cross-modal review, second opinion | `skills/cross-modal-review/SKILL.md` |
 | "Validate skills", skill health check | `skills/testing/SKILL.md` |
@@ -125,4 +125,3 @@ These apply to ALL brain-writing skills:
 | "verify this academic claim", "check this study", "academic verify", "validate citation", "is this study real" | `skills/academic-verify/SKILL.md` |
 | "make pdf from brain", "brain pdf", "convert brain page to pdf", "publish this page as pdf", "export brain page" | `skills/brain-pdf/SKILL.md` |
 | "voice note", "ingest this voice memo", "transcribe and file", "voice note ingest", "save this audio note" | `skills/voice-note-ingest/SKILL.md` |
-
