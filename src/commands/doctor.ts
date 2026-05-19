@@ -36,6 +36,23 @@ export interface DoctorReport {
   checks: Check[];
 }
 
+function detectDoctorSkillsDir(startDir: string = process.cwd(), env: NodeJS.ProcessEnv = process.env) {
+  const detected = autoDetectSkillsDirReadOnly(startDir, env);
+
+  // gbrain doctor is a health check for the installed GBrain bundle. The broad
+  // cwd walk-up tier is useful for dedicated skill commands, but it can make
+  // doctor look unhealthy when invoked from an OpenClaw workspace whose local
+  // skills follow a different manifest/frontmatter contract. If the implicit
+  // cwd hit lacks a manifest, prefer the bundled GBrain skills tree.
+  if (detected.source === 'cwd_walk_up' && detected.dir && !existsSync(join(detected.dir, 'manifest.json'))) {
+    const moduleDir = dirname(fileURLToPath(import.meta.url));
+    const bundled = autoDetectSkillsDirReadOnly(moduleDir, {});
+    if (bundled.dir) return bundled;
+  }
+
+  return detected;
+}
+
 /**
  * Compute the {status, health_score} headline from a list of checks.
  * Mirrors the calculation in outputResults() so remote callers and the
@@ -223,7 +240,7 @@ export async function whoknowsHealthCheck(
       const cwdFixturePath = join(opts.startDir, WHOKNOWS_FIXTURE_RELATIVE_PATH);
       fixturePath = cwdFixturePath;
       if (!existsSync(cwdFixturePath) && opts.allowInstallFallback !== false) {
-        const detected = autoDetectSkillsDirReadOnly(opts.startDir);
+        const detected = detectDoctorSkillsDir(opts.startDir);
         if (detected.dir) {
           const installFixturePath = join(dirname(detected.dir), WHOKNOWS_FIXTURE_RELATIVE_PATH);
           if (existsSync(installFixturePath)) fixturePath = installFixturePath;
@@ -1368,7 +1385,7 @@ export async function runDoctor(engine: BrainEngine | null, args: string[], dbSo
   // Read-only variant adds the install-path fallback so a hosted-CLI install
   // run from `~` (e.g., `bun install -g github:garrytan/gbrain && cd ~ &&
   // gbrain doctor`) can still find the bundled skills/ dir without warning.
-  const detected = autoDetectSkillsDirReadOnly();
+  const detected = detectDoctorSkillsDir();
   const skillsDir = detected.dir;
   if (skillsDir) {
 

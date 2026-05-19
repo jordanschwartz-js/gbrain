@@ -80,6 +80,22 @@ describe('whoknows_health doctor check', () => {
     }
   });
 
+  it('falls back to bundled fixture when cwd has non-GBrain skills without a manifest', async () => {
+    try {
+      mkdirSync('skills/example', { recursive: true });
+      writeFileSync('AGENTS.md', '# Agent workspace\n');
+      writeFileSync('skills/example/SKILL.md', '# Example\n');
+
+      const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir });
+
+      expect(check.name).toBe('whoknows_health');
+      expect(check.status).toBe('ok');
+      expect(check.message).toContain('eval fixture present');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('warns when fixture exists but is empty', async () => {
     try {
       mkdirSync('test/fixtures', { recursive: true });
