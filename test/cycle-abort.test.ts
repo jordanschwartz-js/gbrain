@@ -114,6 +114,22 @@ describe('autopilot-cycle handler contract (v0.20.5)', () => {
     expect(handlerBlock).toContain('signal: job.signal');
   });
 
+  test('handler registration threads pull option from job data', async () => {
+    const fs = await import('fs');
+    const jobsSource = fs.readFileSync(
+      new URL('../src/commands/jobs.ts', import.meta.url),
+      'utf8',
+    );
+
+    const handlerBlock = jobsSource.slice(
+      jobsSource.indexOf("worker.register('autopilot-cycle'"),
+      jobsSource.indexOf("worker.register('autopilot-cycle'") + 2000,
+    );
+
+    expect(handlerBlock).toContain('const pull = job.data.pull !== false');
+    expect(handlerBlock).toContain('pull,');
+  });
+
   test('worker.ts has force-eviction safety net after timeout', async () => {
     // Verify the worker code includes the grace timer
     const fs = await import('fs');

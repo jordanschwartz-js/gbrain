@@ -1112,6 +1112,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
     const repoPath = typeof job.data.repoPath === 'string'
       ? job.data.repoPath
       : (await engine.getConfig('sync.repo_path')) ?? '.';
+    const pull = job.data.pull !== false;
 
     // Allow callers to select phases via job data (e.g. skip embed for
     // fast cycles). Validates against ALL_PHASES to prevent injection.
@@ -1123,7 +1124,7 @@ export async function registerBuiltinHandlers(worker: MinionWorker, engine: Brai
 
     const report = await runCycle(engine, {
       brainDir: repoPath,
-      pull: true, // autopilot daemon opts into git pull
+      pull,
       signal: job.signal, // propagate abort so cycle bails on timeout/cancel
       ...(requestedPhases && requestedPhases.length > 0 ? { phases: requestedPhases as any } : {}),
       yieldBetweenPhases: async () => {

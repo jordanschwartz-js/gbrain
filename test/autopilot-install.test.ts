@@ -98,4 +98,11 @@ describe('autopilot wrapper script — env source order (v0.36.1.x #966)', () =>
     expect(src).toMatch(/source\s+~\/\.zshenv/);
     expect(src).toMatch(/source\s+~\/\.zshrc/);
   });
+
+  test('wrapper can preserve --no-pull install mode', async () => {
+    const { readFileSync } = await import('fs');
+    const src = readFileSync('src/commands/autopilot.ts', 'utf8');
+    expect(src).toContain("opts.noPull ? ' --no-pull' : ''");
+    expect(src).toContain("writeWrapperScript(repoPath, { noPull: args.includes('--no-pull') })");
+  });
 });
