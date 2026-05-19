@@ -118,6 +118,8 @@ describe('whoknows_health doctor check', () => {
       const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
       expect(check.status).toBe('ok');
       expect(check.message).toContain('10 queries');
+      expect(check.message).toContain('eval availability only');
+      expect(check.message).not.toContain('to grade');
     } finally {
       cleanup();
     }
@@ -157,6 +159,7 @@ describe('whoknows_health doctor check', () => {
       const check = await whoknowsHealthCheck(stubEngine, { startDir: workDir, allowInstallFallback: false });
       expect(check.status).toBe('ok');
       expect(check.message).toContain('5 queries');
+      expect(check.message).toContain('eval availability only');
     } finally {
       cleanup();
     }

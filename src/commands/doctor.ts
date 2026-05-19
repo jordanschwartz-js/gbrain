@@ -271,7 +271,7 @@ export async function whoknowsHealthCheck(
     return {
       name: 'whoknows_health',
       status: 'ok',
-      message: `whoknows eval fixture present (${rows.length} queries). Run \`gbrain eval whoknows test/fixtures/whoknows-eval.jsonl\` to grade.`,
+      message: `whoknows eval fixture present (${rows.length} queries). This checks eval availability only; grade live quality with a hand-labeled fixture for this brain.`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

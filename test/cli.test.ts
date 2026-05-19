@@ -166,6 +166,27 @@ describe('CLI dispatch integration', () => {
     }
   });
 
+  test('eval whoknows --help prints detailed help without configured brain', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'gbrain-cli-help-'));
+    try {
+      const proc = Bun.spawn(['bun', 'run', 'src/cli.ts', 'eval', 'whoknows', '--help'], {
+        cwd: repoRoot,
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: isolatedEnv(home),
+      });
+      const stdout = await new Response(proc.stdout).text();
+      const stderr = await new Response(proc.stderr).text();
+      const exitCode = await proc.exited;
+      expect(stdout).toContain('Usage: gbrain eval whoknows <fixture.jsonl>');
+      expect(stdout).toContain('Two-layer eval gate');
+      expect(stderr).not.toContain('No brain configured');
+      expect(exitCode).toBe(0);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('init --help short-circuits CLI-only dispatch without writing config', async () => {
     const home = mkdtempSync(join(tmpdir(), 'gbrain-cli-help-'));
     try {

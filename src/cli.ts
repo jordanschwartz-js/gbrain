@@ -76,7 +76,8 @@ async function main() {
   }
 
   // Per-command --help
-  if (hasHelpFlag(subArgs)) {
+  const evalSubcommandHandlesHelp = command === 'eval' && subArgs[0] === 'whoknows';
+  if (hasHelpFlag(subArgs) && !evalSubcommandHandlesHelp) {
     const op = cliOps.get(command);
     if (op) {
       printOpHelp(op);
@@ -1014,6 +1015,14 @@ async function handleCliOnly(command: string, args: string[]) {
     return;
   }
 
+  // v0.33.1.3: `gbrain eval whoknows --help` owns detailed subcommand
+  // usage and must not require a configured local brain.
+  if (command === 'eval' && args[0] === 'whoknows' && hasHelpFlag(args.slice(1))) {
+    const { runEvalWhoknows } = await import('./commands/eval-whoknows.ts');
+    process.exitCode = await runEvalWhoknows(null, args.slice(1));
+    return;
+  }
+
   // v0.33.1.3: `gbrain eval whoknows` on thin-client installs bypasses
   // connectEngine entirely — the eval routes per-query through the remote
   // `find_experts` MCP op (the v0.31.1 routing seam). Local mode falls
@@ -1022,7 +1031,8 @@ async function handleCliOnly(command: string, args: string[]) {
     const cfgPre = loadConfig();
     if (isThinClient(cfgPre)) {
       const { runEvalWhoknows } = await import('./commands/eval-whoknows.ts');
-      process.exit(await runEvalWhoknows(null, args.slice(1)));
+      process.exitCode = await runEvalWhoknows(null, args.slice(1));
+      return;
     }
   }
 
