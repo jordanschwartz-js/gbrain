@@ -866,7 +866,7 @@ export async function checkZeEmbeddingHealth(engine: BrainEngine): Promise<Check
  * v0.36.0.0 (A5): embedding_width_consistency doctor check.
  *
  * Cross-checks that `config.embedding_dimensions` matches the actual
- * `vector(N)` width on `content_chunks.embedding`. Drift here means the
+ * `vector(N)` or `halfvec(N)` width on `content_chunks.embedding`. Drift here means the
  * ze-switch was interrupted mid-flight (schema changed but config write
  * crashed, or vice versa). Surfaces a paste-ready `gbrain ze-switch
  * --resume` hint.
@@ -910,22 +910,23 @@ export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promi
       };
     }
     const formatType = rows[0].format_type;
-    // Parse 'vector(N)' shape.
-    const m = formatType.match(/vector\((\d+)\)/i);
+    // Parse 'vector(N)' or 'halfvec(N)' shape.
+    const m = formatType.match(/^(vector|halfvec)\((\d+)\)/i);
     if (!m) {
       return {
         name: 'embedding_width_consistency',
         status: 'warn',
-        message: `Unexpected column type for content_chunks.embedding: "${formatType}".`,
+        message: `Unexpected column type for content_chunks.embedding: "${formatType}". Expected vector(N) or halfvec(N).`,
       };
     }
-    const schemaDim = parseInt(m[1], 10);
+    const schemaType = m[1].toLowerCase();
+    const schemaDim = parseInt(m[2], 10);
     if (schemaDim !== configDim) {
       return {
         name: 'embedding_width_consistency',
         status: 'warn',
         message:
-          `Schema width mismatch: content_chunks.embedding is vector(${schemaDim}) but ` +
+          `Schema width mismatch: content_chunks.embedding is ${schemaType}(${schemaDim}) but ` +
           `embedding_dimensions config = ${configDim}. ` +
           `Fix: \`gbrain ze-switch --resume\` if you were mid-switch, or ` +
           `\`gbrain config set embedding_dimensions ${schemaDim}\` to match the schema.`,
@@ -934,7 +935,7 @@ export async function checkEmbeddingWidthConsistency(engine: BrainEngine): Promi
     return {
       name: 'embedding_width_consistency',
       status: 'ok',
-      message: `Schema width (${schemaDim}d) matches embedding_dimensions config`,
+      message: `Schema width (${schemaType} ${schemaDim}d) matches embedding_dimensions config`,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

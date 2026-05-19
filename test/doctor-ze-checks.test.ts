@@ -5,7 +5,7 @@
  *  - ze_embedding_health: warns when embedding_model is ZE but no key
  *    is configured; OK when key present; OK when not on ZE (skip).
  *  - embedding_width_consistency: warns when configured dim diverges
- *    from the actual vector(N) column width.
+ *    from the actual vector(N) or halfvec(N) column width.
  */
 
 import { describe, test, expect, beforeAll, afterAll, beforeEach } from 'bun:test';
@@ -91,6 +91,21 @@ describe('checkEmbeddingWidthConsistency', () => {
     const check = await checkEmbeddingWidthConsistency(engine);
     expect(check.status).toBe('ok');
     expect(check.message).toContain(`${schemaDim}d`);
+  });
+
+  test('halfvec primary embedding column is accepted when width matches', async () => {
+    const fakeEngine = {
+      async getConfig(key: string) {
+        return key === 'embedding_dimensions' ? '2560' : null;
+      },
+      async executeRaw() {
+        return [{ format_type: 'halfvec(2560)' }];
+      },
+    };
+    const check = await checkEmbeddingWidthConsistency(fakeEngine as any);
+    expect(check.status).toBe('ok');
+    expect(check.message).toContain('halfvec');
+    expect(check.message).toContain('2560d');
   });
 
   test('config mismatches schema width: warns with fix hint', async () => {
