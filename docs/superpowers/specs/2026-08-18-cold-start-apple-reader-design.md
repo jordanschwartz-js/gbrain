@@ -1,657 +1,965 @@
-# Cold Start Apple Reader Design
+# Cold Start Apple Collection Architecture
 
 **Date:** 2026-08-18  
-**Status:** Approved design, implementation not started  
-**Scope:** Native macOS read-only adapter for `skills/cold-start-apple/SKILL.md`
+**Status:** Revised after adversarial review; awaiting approval; implementation not started  
+**Scope:** Local Apple data collection for `skills/cold-start-apple/SKILL.md`
 
-## Summary
+## Executive verdict
 
-Build a small, purpose-built macOS reader for GBrain's Apple cold-start workflow. The reader is based primarily on the MIT-licensed `omarshahine/apple-pim` native implementation, with selected correctness and coverage ideas from the MIT-licensed `54yyyu/pyapple-mcp`, `krmj22/macos-mcp`, and `l22-io/orchard-mcp` projects.
+The previous design had the right high-level instincts but was not safe or precise enough to implement as written.
 
-The finished reader is not a general Apple automation server. It is a deterministic snapshot adapter whose executable contains no Apple mutation operations. V1 reads only locally synchronized Contacts, Calendar, Mail, and Messages data on the Mac. GBrain keeps the existing cold-start product behavior: consent gates, source windows, smart sampling, normalization, review, provenance, and Markdown output.
+It correctly required local-only collection, no Apple mutations, explicit coverage, deterministic reruns, and a separate native boundary. However, it combined too much authority in one reusable headless helper, treated unstable Apple identifiers as more durable than Apple documents them to be, and promoted two private-database integrations to first-class V1 components before proving their compatibility boundaries.
 
-The adapter should live in a separate repository, tentatively named `cold-start-apple-reader`, while GBrain pins a reviewed release or commit and invokes its JSON CLI from `cold-start-apple`.
+This revision changes the architecture rather than merely adding warnings:
 
-## Goals
+1. **Reject the reusable headless TCC helper.** A permanently authorized helper that any same-user process can invoke is a confused-deputy boundary. Apple PIM's current helper forwards caller-supplied CLI arguments and output paths to privileged child tools. That is useful general-purpose infrastructure, but it is the wrong trust model for a sensitive one-time import.
+2. **Split permissions by collector.** Contacts, Calendar, and Mail no longer share one process or code-signing identity. Mail's Full Disk Access is isolated from Contacts and Calendar.
+3. **Require visible, per-run user confirmation.** No collector exports data from a command-line invocation, background job, LaunchAgent, URL scheme, generic Apple Event, or unattended agent call.
+4. **Narrow the first shippable milestone to supported Apple frameworks.** Contacts and Calendar form the core release. Mail remains a separately qualified private-schema module. Messages uses a pinned external exporter rather than a new home-grown Messages database parser.
+5. **Treat source identifiers as local locators, not permanent identities.** Every domain carries an identity-map version, reconciliation evidence, and fail-closed ambiguity handling.
+6. **Replace a normal Apple PIM fork with a minimal derivative repository.** Upstream lineage remains explicit, but unrelated write, MCP, SMTP, OpenClaw, and mail-channel code never enters the production tree.
 
-1. Provide deterministic, local-only reads of Apple data needed by GBrain cold start.
-2. Make destructive or outbound Apple actions impossible by construction, not merely prohibited by agent instructions.
-3. Preserve source completeness information so partial reads cannot masquerade as complete reads.
-4. Preserve stable source identities so rerunning the same snapshot does not duplicate GBrain pages.
-5. Use native macOS frameworks where supported and read-only SQLite/filesystem access where native read APIs are absent or unsuitable at scale.
-6. Keep macOS permission ownership stable across host agents by using a dedicated, signed helper app identity.
-7. Keep upstream lineage and licensing clear enough to track security and compatibility fixes over time.
+The selected design is therefore a **split, user-confirmed snapshot system**, not an always-available Apple connector.
 
-## Non-goals
+## Review outcome
 
-V1 does not:
+| Prior design claim | Skeptical finding | Revised decision |
+|---|---|---|
+| One signed helper app can safely own all Apple permissions | A reusable helper is callable by other same-user processes and concentrates Contacts, Calendar, and Full Disk Access | Separate visible collectors; no unattended production helper |
+| The reader is read-only because it exposes no write commands | EventKit has no read-only authorization level; Calendar full access permits reads and writes. Contacts and Calendar sandbox entitlements are also read-write capabilities | State the real boundary: read-write OS grant, but immutable/read-only code surface, separate target, sandbox, no write APIs, and runtime qualification |
+| `eventIdentifier` plus occurrence start is a durable calendar identity | Apple says a full sync can invalidate `calendarItemIdentifier`, and moving an event can change `eventIdentifier` | Preserve all local locators plus recurrence metadata and reconcile only on a unique strong fingerprint |
+| A Contacts identifier is a durable person key | Unified contacts are temporary views; a unified fetch may return a different identifier, and identifiers are device-local | Enumerate raw source cards, preserve container context, record unified views as locators, and maintain an explicit alias map |
+| Contacts notes can be included when available | `CNContactNoteKey` requires a restricted entitlement on macOS 13+ and public distribution requires Apple approval | Exclude contact notes from V1 |
+| Mail is a normal V1 reader | Envelope Index, Accounts store, mailbox URLs, Gmail labels, and `.emlx` paths are private implementation details; Apple PIM still has a material account-selection issue open | Separate experimental Mail collector with exact schema allowlist and no fallback |
+| We should build our own Messages reader for V1 | The schema and typedstream surface are large and changing, while `imessage-exporter` already tracks current Messages formats | Use a separately installed, pinned exporter and preserve raw output; do not copy or link GPL code |
+| A GitHub fork is the cleanest production base | A normal fork retains a large unrelated write-capable tree and makes accidental upstream merges easier | New minimal repository with selected MIT-derived files, file-level attribution, and an upstream comparison manifest |
 
-- send, reply to, move, delete, flag, mark read, create, or edit Mail;
-- create, update, delete, or invite attendees to Calendar events;
-- create, update, or delete Contacts;
-- send Messages or copy message attachments;
-- create or edit Notes or Reminders;
-- expose an MCP server, HTTP server, OpenClaw plugin, daemon, scheduler, watcher, or background service;
-- request Apple Account passwords, app-specific passwords, cookies, OAuth tokens, or other iCloud credentials;
-- perform live synchronization after the point-in-time cold-start snapshot;
-- replace GBrain's existing filtering, significance, consent, enrichment, provenance, or page-writing behavior.
+## Evidence basis and limits
 
-Notes and Reminders are explicitly deferred. They may be added later as independent read domains after the core cold-start path is qualified.
+### Authoritative Apple platform facts
 
-## Existing GBrain contract
+The design relies on these Apple-documented facts:
 
-`cold-start-apple` remains an adapter to the existing `cold-start` workflow, not a separate product. The source mapping remains:
+- EventKit cannot request read-only Calendar or Reminders access. Reading requires full access, which also permits creating, editing, and deleting data.
+- Sandboxed macOS Calendar and Address Book entitlements provide read-write access to those stores.
+- `calendarItemIdentifier` can be lost after a full calendar sync.
+- `eventIdentifier` most likely changes when an event moves calendars.
+- Event lookup by identifier returns the first occurrence, so a recurring series cannot be modeled by identifier alone.
+- A unified contact is a temporary in-memory view of linked raw contacts. A unified fetch can return a different identifier from the identifier supplied, and contact identifiers are only unique on the current device.
+- Contacts notes require `com.apple.developer.contacts.notes` on macOS 13 and later.
+- App Sandbox limits file and network authority, and security-scoped bookmarks can preserve access to a user-selected export directory for the same signing identity.
+- Apple advises against using `codesign --deep` when signing complex products.
 
-| GBrain cold-start source | Apple source |
-|---|---|
-| Google Contacts | Contacts.framework |
-| Google Calendar | EventKit |
-| Gmail | locally synchronized Mail store |
-| Conversation exports | locally synchronized Messages history plus existing AI exports |
-| Drive/local archives | explicitly approved iCloud Drive/local paths |
+### Inspected upstream evidence
 
-The source adapter must preserve the existing scope:
+The review inspected the following upstream revisions as evidence, not as trusted dependencies:
 
+| Project | Revision inspected | What it establishes |
+|---|---|---|
+| `omarshahine/apple-pim` | `18b8f91a48e537567151553bcb720eb2ee84d770` | Native Contacts/EventKit readers, read-only Mail SQLite path, `.emlx` parsing, TCC helper design, and the breadth of the write-capable surface being removed |
+| `54yyyu/pyapple-mcp` | `9844fa276474434be92b0ac16be6b43a7bd135f0` | Chat-scoped Messages reads, explicit unavailable/partial outcomes, recurrence handling, coverage semantics, and evidence that correct handlers can still be neutralized by front-end seams |
+| `krmj22/macos-mcp` | `5b1561b00894b2f48aed7a46d6e105ae9556e23d` | Independent support for SQLite-based Mail/Messages reads, Gmail label handling, and private-schema tradeoffs |
+| `l22-io/orchard-mcp` | `0de0967a1d298286f0101aec230ea86aaada8404` | Bounded operations, native Contacts/EventKit patterns, output budgets, and visible app-oriented packaging |
+| `ReagentX/imessage-exporter` | `d372aa97e52d5987d0c8bb1dd4a1a37024b24d00` | Broad current Messages-format coverage and a maintained read-only export path; GPL-3.0 boundary |
+
+### Evidence limitations
+
+- No collector has been built or run for this project yet.
+- Upstream performance measurements and live-store observations are source-reported unless independently reproduced during qualification.
+- Apple does not document the Mail Envelope Index, Accounts database schema, `.emlx` location rules, or Messages `chat.db` schema as public application APIs.
+- We have not yet proved whether the Mail collector can retain App Sandbox and still read the required local Mail files.
+- We have not yet qualified any output parser against a pinned `imessage-exporter` release.
+- This document is a design decision, not evidence that read-only behavior, compatibility, or data completeness has been achieved.
+
+## Product boundary
+
+`cold-start-apple` remains a point-in-time adapter to the existing GBrain cold-start workflow. It does not become a general Apple automation product.
+
+The existing product behavior remains authoritative:
+
+- explicit consent before each source phase;
 - all approved contacts;
-- the last 90 days of calendar history;
-- smart sampling of recent mail rather than bulk mail ingestion;
-- user-selected Messages scope, followed by the existing significance threshold;
-- explicit consent before each phase;
-- stable local source repositories and normal GBrain Markdown as the durable format.
+- the last 90 days of approved calendars;
+- smart sampling of recent Mail rather than bulk body ingestion;
+- user-selected Messages participants and date range;
+- existing significance, filtering, enrichment, review, and provenance rules;
+- deterministic local source repositories and normal GBrain Markdown as durable knowledge;
+- no deletion propagation in snapshot V1;
+- no live sync, daemon, watcher, scheduler, or background service.
 
-## Recommended upstream sources
+## Threat model
 
-### Primary foundation: Apple PIM
+### In scope
 
-Repository: `omarshahine/apple-pim`
+1. **Same-user agent or application without Apple grants.** A prompt-injected agent, editor plugin, shell process, or other local application may try to use an already authorized collector as a deputy.
+2. **Prompt injection in imported content.** Mail, Messages, contact fields, calendar notes, filenames, and document text are untrusted data.
+3. **Accidental reintroduction of writes.** A future developer may import an upstream file, expose a new verb, or link mutation code without recognizing the boundary.
+4. **Private-schema drift.** A macOS update, account type, or store rebuild may alter private Mail or Messages structures and produce a plausible but wrong answer.
+5. **Partial local synchronization.** The Mac may not hold all server or device history.
+6. **Identity drift and ambiguity.** Apple locators may change after unification, sync, move, or local store rebuild.
+7. **Supply-chain drift.** An upstream branch, package release, prebuilt binary, or dependency may change after review.
+8. **Privacy leakage.** Raw bodies, addresses, phone numbers, subjects, or identifiers may escape through logs, synced folders, Git, crash reports, or overlong retention.
 
-Use as the primary implementation source for:
+### Out of scope
 
-- Contacts.framework access and rich contact shaping;
-- EventKit Calendar access and rich event shaping;
-- Mail Envelope Index discovery and read-only SQLite queries;
-- `.emlx` body and header reading;
-- macOS TCC helper-app architecture and stable responsible-process identity;
-- permission diagnostics and native JSON CLI conventions.
+- root or administrator compromise;
+- a compromised macOS kernel or Apple framework;
+- an unlocked physical attacker with full control of the user's account;
+- a fully unsandboxed malicious process that can already read arbitrary files in the user's home directory after the user intentionally exports a snapshot;
+- proving that the Mac's local Apple stores are complete replicas of iCloud or every Apple device.
 
-Do not retain Apple PIM's mutation surface, SMTP/IMAP write support, secrets store, MCP server, OpenClaw plugin, or general-purpose agent features in the finished cold-start reader.
+The last point matters: TCC protects the source stores, but data exported to a normal user-readable folder no longer has the source store's TCC protection. V1 mitigates that residual risk with minimum scope, local-only storage, restrictive permissions, no synced folder, and short retention. It does not claim hard isolation from arbitrary same-user malware after export.
 
-### Correctness reference: PyApple MCP
+## Security and correctness invariants
 
-Repository: `54yyyu/pyapple-mcp`
+The implementation is acceptable only if all of these properties are falsifiably true:
 
-Use as the primary correctness reference for:
+1. No production collector exports Apple data without a visible scope screen and an explicit user confirmation for that run.
+2. No production collector exposes a general CLI, raw SQL, generic script execution, arbitrary subprocess execution, arbitrary output path, URL-triggered export, or unattended IPC endpoint.
+3. Contacts, Calendar, and Mail permissions belong to separate signed application targets.
+4. The Contacts target contains no `CNMutableContact`, `CNSaveRequest`, contact group save, or Contacts Apple Event path.
+5. The Calendar target contains no EventKit save, remove, commit, calendar mutation, attendee mutation, or Calendar Apple Event path.
+6. The Mail target contains no Mail Automation/JXA fallback, SMTP, IMAP mutation, flag update, move, delete, reply, draft, attachment copy, or secrets code.
+7. A failed, denied, unknown, ambiguous, truncated, or unsupported read never serializes as a successful empty result.
+8. Unknown private schemas fail closed before returning records.
+9. A source locator is never treated as a permanent identity without reconciliation evidence.
+10. Imported content is never executed, interpolated into scripts, used as SQL syntax, or interpreted as collector configuration.
+11. The collector writes only to its application container and the one user-selected snapshot root.
+12. Production Contacts and Calendar targets have no network client or server entitlement and no application-level network feature.
+13. GBrain receives no Contacts, Calendar, Mail Automation, or Full Disk Access grant.
+14. GBrain ignores incomplete runs and imports only a finalized, hash-verified snapshot.
+15. Real personal data is admitted separately by domain only after that domain's synthetic qualification gate passes.
 
-- Messages chat-scoped reads rather than participant-only joins;
-- explicit SQLite `mode=ro` behavior;
-- Messages attributed-body decoding strategy;
-- truncation, total-count, pagination, and coverage semantics;
-- distinction between an unavailable source and a valid empty result;
-- Calendar recurring-occurrence identity;
-- Calendar completeness checks and long-window segmentation principles.
+## Options considered
 
-Code copied or adapted from this MIT project must retain required attribution.
+### Option 1: One reusable headless Apple reader
 
-### Independent architecture reference: macos-mcp
+This is the prior design: one signed helper app owns Contacts, Calendar, Mail, and Messages access and accepts command-line requests from GBrain.
 
-Repository: `krmj22/macos-mcp`
+**Why it is attractive:** one installation, one permission identity, direct automation, and a small GBrain integration surface.
 
-Use to independently validate:
+**Why it is rejected:** the helper becomes a standing local data-exfiltration capability. The current Apple PIM helper demonstrates the risky shape directly: it accepts a CLI name, arbitrary forwarded arguments, and caller-selected output/error paths. Removing mutation verbs would reduce harm, but any same-user process could still use its persistent TCC and Full Disk Access to read protected data. The single process also couples supported framework access to fragile private database access and maximizes blast radius.
 
-- SQLite-for-Mail and SQLite-for-Messages architecture;
-- Gmail label-table handling;
-- local AddressBook/identity enrichment assumptions;
-- Full Disk Access failure handling;
-- fail-loud behavior when a local SQLite read is unavailable.
+### Option 2: Separate user-confirmed collectors
 
-Do not depend on its MCP or TypeScript runtime in V1.
+Contacts, Calendar, and Mail use separate application targets. Each collector is visible, one-shot, scope-bounded, and writes a signed snapshot only after the user confirms. Messages is an external, pinned export step.
 
-### Independent safety reference: Orchard MCP
+**Security effect:** sharply reduces ambient authority and prevents silent use by an agent. A Mail compromise does not inherit Contacts or Calendar access. Supported framework readers can ship without private-schema modules.
 
-Repository: `l22-io/orchard-mcp`
+**Costs:** more targets, more first-use permission prompts, a slightly less automated cold-start experience, and additional release/qualification work.
 
-Use to inform:
+**Decision:** selected.
 
-- bounded expensive operations;
-- preflight/doctor behavior;
-- output-size and timeout protection;
-- native Contacts.framework and EventKit access patterns;
-- helper-app packaging.
+### Option 3: File exports only
 
-Do not adopt its AppleScript Mail read path for cold-start ingestion.
+The user manually exports Contacts, Calendar, Mail, and Messages using native or third-party tools, then GBrain ingests files.
 
-### Qualification oracle only: imessage-exporter
+**Security effect:** smallest custom privileged surface.
 
-Repository: `ReagentX/imessage-exporter`
+**Costs:** Apple does not offer equally complete, repeatable native exports for every domain, and the manual workflow is harder to resume, scope, and reconcile.
 
-This project is GPL-3.0. It must remain a separate external executable and must not be copied into the permissively licensed cold-start reader unless the project intentionally accepts the resulting GPL obligations.
+**When it becomes preferable:** if the user does not accept persistent app permissions, or if Mail's private-schema collector cannot pass qualification.
 
-It may be used during qualification to compare selected synthetic or explicitly approved message samples because it has exceptionally broad iMessage/SMS/MMS/RCS feature coverage.
+## Revised release boundary
+
+The work is split into independently shippable and independently approved modules.
+
+### Core release
+
+1. **Contacts Collector** using Contacts.framework.
+2. **Calendar Collector** using EventKit.
+3. **Snapshot Validator and GBrain Adapter** with no Apple grants.
+
+### Qualified add-ons
+
+4. **Mail Collector**, only after a separate private-schema feasibility and qualification gate.
+5. **Messages Export Adapter**, using a separately installed pinned `imessage-exporter` binary and a version-pinned parser.
+
+Mail or Messages failure does not block the supported-framework core release.
 
 ## High-level architecture
 
 ```text
-GBrain
-└── skills/cold-start-apple/
-          │
-          │ invokes JSON CLI
-          ▼
-ColdStartAppleReader.app
-stable macOS TCC identity
-          │
-          └── cold-start-apple-reader
-                ├── doctor
-                ├── contacts
-                │    └── Contacts.framework
-                ├── calendar
-                │    └── EventKit
-                ├── mail
-                │    ├── Envelope Index [read only]
-                │    └── .emlx files [read only]
-                └── messages
-                     └── chat.db [read only]
+                         no Apple TCC / no FDA
+GBrain cold-start  ─────────────────────────────────────┐
+                                                       │
+                     creates bounded request files      │
+                     and reads completed snapshots      │
+                                                       ▼
+                                      Snapshot Validator / Importer
+                                                       ▲
+                                                       │ hash-verified run folder
+             ┌─────────────────────────────────────────┼────────────────────────┐
+             │                                         │                        │
+             │ visible confirmation                    │ visible confirmation   │ user-run command
+             ▼                                         ▼                        ▼
+ContactsCollector.app                      CalendarCollector.app       imessage-exporter
+App Sandbox                                App Sandbox                  external GPL binary
+Contacts entitlement                       Calendar entitlement         Messages FDA boundary
+no network entitlement                     no network entitlement       pinned, not bundled
+             │                                         │                        │
+             ▼                                         ▼                        ▼
+      Contacts.framework                           EventKit                TXT snapshot
+
+                                      separately qualified
+                                               │
+                                               ▼
+                                      MailCollector.app
+                                      isolated FDA identity
+                                      private schema allowlist
+                                      no Mail Automation
 ```
 
-The helper app exists to provide one stable macOS privacy identity. It launches the reader as its responsible process. The reader returns structured JSON to the caller. It does not expose a listening socket.
+The production design does not include a shared privileged daemon, LaunchAgent, background-only helper, HTTP server, MCP server, or long-running process.
 
-## Hard read-only boundary
+## Repository strategy
 
-The safety objective is stronger than "the agent should not call write commands." The shipped reader must not contain Apple write commands at all.
+Create a new minimal repository, tentatively:
 
-The production executable must have no code path for:
+```text
+jordanschwartz-js/cold-start-apple-collectors
+```
 
-- Mail send/reply/forward/draft/update/move/delete/mark-read/flag/save-attachment/SMTP/IMAP mutation/secrets;
-- Calendar create/update/delete/batch-create/private attendee writes;
-- Contacts create/update/delete/save requests;
-- Messages send/react/attachment send;
-- Notes or Reminders writes;
-- generic AppleScript/JXA execution supplied by the caller.
+It contains only:
 
-Read-only SQLite stores must be opened with an API-enforced read-only mode. Mail's Envelope Index should use `SQLITE_OPEN_READONLY` plus `PRAGMA query_only = 1`. Messages should use SQLite URI `mode=ro` or the equivalent native `SQLITE_OPEN_READONLY` API and must not use a normal connection mode that can create a missing database.
+- the Contacts app target;
+- the Calendar app target;
+- the optional Mail app target behind its own build/release gate;
+- shared snapshot models that contain no Apple mutation or private-store code;
+- unit, UI, integration, and qualification fixtures;
+- `UPSTREAM.md`, `NOTICE`, and license files.
 
-The reader must not execute instructions contained in Mail, Messages, Calendar notes, or Contacts notes. Imported source content is data only.
+Do **not** make the production repository a normal feature-compatible GitHub fork of Apple PIM. Instead:
 
-## TCC and helper-app design
+- record Apple PIM as an `upstream` comparison remote;
+- import only selected reviewed files or functions;
+- retain copyright notices and the MIT license in copied or substantially adapted files;
+- document source revision, source path, local changes, and reason for inclusion in `UPSTREAM.md`;
+- optionally maintain a separate private audit fork solely for upstream comparison.
 
-Use the Apple PIM helper-app pattern as the base.
+An upstream update is reviewed by subsystem. No generic merge from Apple PIM main is allowed.
 
-Requirements:
+## Collector interaction model
 
-1. The reader runs through a small `.app` bundle with a fixed bundle identifier.
-2. The final bundle identifier is selected before the first real permission qualification and is then treated as immutable for that installation lineage.
-3. The bundle carries only the privacy usage descriptions required by V1.
-4. Usage strings describe read access, not "read and manage" access.
-5. The helper executable is a real Mach-O executable, not a shell script declared as `CFBundleExecutable`.
-6. Rebuilding or re-signing an unchanged helper is avoided because TCC grants may be tied to its code identity.
-7. Prefer a stable Apple Development or Developer ID identity when operationally appropriate. Ad-hoc signing is acceptable for an early local qualification only if its TCC persistence behavior is explicitly tested.
-8. `doctor` must report which process/bundle currently owns each relevant privacy grant.
+### Request descriptor
 
-Expected permissions:
+GBrain may create a bounded request document and open it with the appropriate collector. The document is data, not authority.
 
-| Domain | Permission |
-|---|---|
-| Contacts | Contacts access |
-| Calendar | Full Calendar access required for reads |
-| Mail | Full Disk Access for SQLite and `.emlx` reads |
-| Messages | Full Disk Access for `chat.db` reads |
-
-The V1 Mail reader intentionally does not require Mail Automation permission because it has no JXA fallback.
-
-## Common JSON envelope
-
-Every domain returns the same top-level contract.
+Allowed request fields are limited to:
 
 ```json
 {
   "schemaVersion": 1,
-  "source": "apple-messages",
-  "status": "ok",
-  "coverage": {},
-  "returned": 250,
-  "total": 621,
-  "truncated": true,
-  "nextCursor": "opaque-or-null",
-  "items": [],
-  "warnings": []
+  "runId": "uuid",
+  "domain": "contacts|calendar|mail",
+  "requestedAt": "ISO-8601",
+  "window": {
+    "start": "ISO-8601 or null",
+    "end": "ISO-8601 or null"
+  },
+  "suggestedScopeIds": ["opaque-local-id"],
+  "limits": {
+    "maxRecords": 100000
+  }
 }
 ```
 
-### Status values
+The request format has no executable, command, SQL, script, URL, output path, environment variable, parser template, shell fragment, arbitrary predicate, or AppleScript field.
 
-- `ok`: requested read completed with known coverage semantics.
-- `partial`: the reader can return useful data but knows the requested scope is incomplete.
-- `unavailable`: the source could not be read at all, commonly because of missing permission or missing local synchronization.
-- `error`: caller input or an internal invariant prevented a trustworthy answer.
+### Mandatory user confirmation
 
-A failure must never be represented as an empty `items` array with `status: ok`.
+The collector must:
 
-### Coverage requirements
+1. open visibly;
+2. display the exact domain, effective date window, effective selected containers/calendars/accounts, estimated record count where available, and output root;
+3. allow the user to narrow or cancel the scope;
+4. request the relevant macOS permission only in visible UI;
+5. freeze the effective request in memory and compute its digest;
+6. require a fresh confirmation before reading content or bodies;
+7. write the effective scope and request digest into the private manifest.
 
-Each domain reports enough information for the cold-start workflow to know what was actually examined. Coverage metadata may include:
+Opening a request never starts an export automatically. There is no production preference, environment variable, or hidden flag that disables confirmation.
 
-- approved container/calendar/account/chat IDs;
-- requested date window;
-- observed local date extent;
-- number of source records considered;
-- result limit and whether it was hit;
-- locally unavailable bodies;
-- unsupported source records;
-- pagination cursor or next window when applicable.
+### Output root
 
-Human-facing receipts may hash private scope identifiers rather than printing account names, addresses, phone numbers, subjects, or bodies.
+Each sandboxed collector obtains the snapshot root from an `NSOpenPanel` or `NSSavePanel` and persists an app-scoped security-scoped bookmark. The collector generates all descendant paths itself.
 
-## Contacts reader
+The selected root must:
 
-### Backend
+- be local;
+- not be inside Git;
+- not be inside iCloud Drive, Dropbox, OneDrive, Google Drive, or another detected sync root;
+- have owner-only directory permissions;
+- be explicitly reselected if the bookmark becomes stale or the signing identity changes.
 
-Use `CNContactStore` through Contacts.framework.
+The proposed local path is:
 
-### Required output
+```text
+~/.gbrain/apple-cold-start-inbox
+```
 
-For a full contact read, preserve where available:
+The user selects it through the app on first use. GBrain may create it beforehand with mode `0700`, but it cannot grant the collector access to it without the user's file-panel action.
 
-- stable `CNContact.identifier`;
-- container/source identifier;
-- full formatted name and component names;
+## Snapshot protocol
+
+Each domain writes an independent immutable run directory:
+
+```text
+<snapshot-root>/<run-id>/<domain>/
+├── private-manifest.json
+├── public-receipt.json
+├── records.ndjson
+├── errors.ndjson
+├── hashes.sha256
+└── COMPLETE
+```
+
+Rules:
+
+- use `umask 077` semantics;
+- directories are mode `0700`; files are mode `0600`;
+- write to temporary names and atomically rename finalized files;
+- write `COMPLETE` last;
+- never append to a completed snapshot;
+- GBrain ignores any directory without a valid `COMPLETE` marker and matching hashes;
+- records use a domain schema version independent of the top-level manifest version;
+- private manifests may contain local opaque identifiers;
+- public receipts contain counts, code identity, hashes, windows, status, and hashed scope identifiers, but no names, addresses, phone numbers, subjects, bodies, or calendar titles.
+
+### Common outcome model
+
+```json
+{
+  "schemaVersion": 2,
+  "domainSchemaVersion": 1,
+  "collector": "contacts",
+  "status": "complete|partial|unavailable|error|cancelled",
+  "coverage": {},
+  "returned": 0,
+  "totalObserved": 0,
+  "truncated": false,
+  "warnings": [],
+  "errors": []
+}
+```
+
+`complete` means the collector exhausted the approved scope under a known schema and no result limit was hit. It does not mean the local Mac contains all iCloud or device history.
+
+## Contacts Collector
+
+### Permission boundary
+
+Bundle identifier:
+
+```text
+com.jordanschwartz.gbrain.coldstart.contacts
+```
+
+The target uses:
+
+- App Sandbox;
+- Contacts entitlement;
+- user-selected read-write file entitlement for the snapshot root;
+- Hardened Runtime;
+- no incoming or outgoing network entitlement;
+- no Apple Events entitlement.
+
+Apple grants Contacts read-write capability. The project's read-only claim therefore comes from the production code and target structure, not from a nonexistent read-only Contacts permission.
+
+### Data acquisition
+
+Use `CNContactStore` and immutable `CNContact` objects.
+
+Enumerate approved containers explicitly:
+
+1. list containers for user selection;
+2. for each approved container, use a container predicate;
+3. set `CNContactFetchRequest.unifyResults = false` to enumerate raw source cards;
+4. preserve each raw contact identifier with its container identifier;
+5. optionally fetch the unified view for each raw identifier for user-facing merged fields;
+6. group linked cards within the run without discarding the raw source-card set.
+
+### V1 fields
+
+Preserve where available:
+
+- raw contact identifier and container identifier;
+- unified contact locator returned for the raw identifier;
+- formatted name and name components;
 - nickname;
-- organization, title, department;
-- labeled emails and phone numbers;
+- organization, department, and title;
+- labeled emails and phones;
 - labeled postal addresses;
 - URLs;
-- birthdays and other labeled dates;
-- contact relations and social/IM handles where available and useful;
-- contact type;
-- whether an image exists.
+- birthday and other labeled dates;
+- relations and social/instant-message handles where available;
+- person/organization type;
+- image-present boolean.
 
-Do not import contact image bytes into the cold-start snapshot by default.
+V1 excludes:
 
-Contacts notes require restricted entitlement behavior on newer macOS versions. The reader must report note availability explicitly and must not broaden privileges or fall back to app automation merely to recover an unavailable note field.
+- contact note content;
+- contact image bytes;
+- mutable contact objects;
+- contact groups as a write target.
 
-### Identity
+### Identity and reconciliation
 
-The source identity is the Contacts stable identifier plus its source/container context where needed to disambiguate linked cards. Display names are never durable keys.
+A Contacts identifier is a device-local locator, not a universal permanent person identity.
 
-### Completeness
+For each logical record, preserve:
 
-List operations must report the total enumerated count. Container filters must be explicit. A failure to enumerate is `unavailable` or `error`, not an empty address book.
+```text
+identityMapVersion
+sorted raw locators: containerIdentifier + rawContactIdentifier
+unified locator observed in this run
+strong normalized fingerprint: verified emails + normalized phones + name/org context
+content hash
+```
 
-## Calendar reader
+Rerun matching order:
 
-### Backend
+1. exact raw locator set;
+2. exact overlap of a raw locator with one prior record;
+3. one unique strong fingerprint match;
+4. otherwise create an ambiguity record for human review.
 
-Use EventKit only.
+Never auto-merge by display name alone. Never silently replace an old locator with a new one without recording an alias transition.
 
-### Window
+### Contacts acceptance gate
 
-GBrain requests exactly the last 90 days for cold start. The reader accepts explicit ISO start and end timestamps.
+Synthetic qualification must cover:
 
-### Required output
+- ordinary contact;
+- organization-only card;
+- multiple emails and phones;
+- birthday and labeled date;
+- linked cards from two containers;
+- duplicate display names;
+- denied permission;
+- a record with a note while the collector lacks the notes entitlement;
+- identifier drift simulated in the reconciliation layer;
+- interrupted export and rerun.
+
+Pass only if no write API is linked or called, raw and unified identities remain distinguishable, counts reconcile, ambiguity fails closed, and an identical rerun produces byte-identical normalized records apart from approved receipt timestamps.
+
+## Calendar Collector
+
+### Permission boundary
+
+Bundle identifier:
+
+```text
+com.jordanschwartz.gbrain.coldstart.calendar
+```
+
+The target uses:
+
+- App Sandbox;
+- Calendar entitlement;
+- `NSCalendarsFullAccessUsageDescription` with an honest explanation that full access is required by Apple to read events;
+- user-selected read-write file entitlement for the snapshot root;
+- Hardened Runtime;
+- no incoming or outgoing network entitlement;
+- no Apple Events entitlement.
+
+The UI must explicitly tell the user that macOS grants full Calendar access even though this collector implements only reads.
+
+### Data acquisition
+
+Use EventKit only. Do not use Calendar AppleScript, private attendee setters, or EventKit mutation calls.
+
+The cold-start request is the last 90 days, but reads are internally divided into deterministic bounded segments, such as 31-day segments. Events spanning segment boundaries may appear more than once and must be deduplicated by the full observed locator tuple, not by title.
+
+### V1 fields
 
 Preserve:
 
-- event identifier;
-- occurrence start and end;
-- all-day status;
-- calendar identifier and title;
-- calendar source/account metadata suitable for scope selection;
-- title;
-- location;
-- notes;
-- URL;
-- recurrence information;
-- attendees and organizer when available;
-- participation status where available.
+- `calendarIdentifier` and calendar source metadata;
+- `calendarItemIdentifier`;
+- `calendarItemExternalIdentifier` when available;
+- `eventIdentifier`;
+- `occurrenceDate` when available;
+- `isDetached`;
+- start and end timestamps;
+- event time zone;
+- all-day local date components and local calendar/time-zone context;
+- title, location, notes, URL;
+- recurrence rule details;
+- organizer and attendees where available;
+- attendee status/role/type where available;
+- event status and availability.
 
-### Recurring-event identity
+All-day events must preserve local date semantics. Converting an all-day event solely to UTC timestamps must not move it to an adjacent date in GBrain.
 
-Do not use `eventIdentifier` alone as the durable source key. EventKit recurring occurrences can share the same identifier.
+### Identity and reconciliation
 
-Use a deterministic occurrence key based on at least:
+No single EventKit identifier is durable enough to be the sole GBrain identity.
+
+The exact observed locator includes:
 
 ```text
-calendarIdentifier + eventIdentifier + occurrenceStart
+calendar source/account context
+calendarIdentifier
+calendarItemIdentifier
+calendarItemExternalIdentifier when available
+eventIdentifier
+occurrenceDate for recurring items, otherwise start
+isDetached
 ```
 
-If later qualification shows another field is required for cross-account collision resistance, extend the private identity-map version and migrate deterministically rather than silently changing existing keys.
+The recurrence anchor is `occurrenceDate` when EventKit provides it. A detached occurrence retains both its original occurrence date and modified start/end.
 
-### Completeness
+Rerun matching order:
 
-The reader must not silently truncate EventKit windows. Even though cold start currently requests only 90 days, retain an internal segmented-window implementation or explicit safe maximum so a future wider caller cannot receive a silently incomplete result.
+1. exact observed locator;
+2. unique external identifier plus occurrence anchor within the same source context;
+3. unique strong fingerprint containing source context, recurrence anchor, all-day/date semantics, start/end or duration, normalized title, and organizer where available;
+4. otherwise ambiguity review.
 
-A returned record count equal to a caller limit is not proof of completeness. The envelope must indicate whether more records exist or whether the range was segmented to exhaustion.
+A full sync, calendar move, detached occurrence, or changed event must produce an explicit identity transition rather than a silent overwrite.
 
-## Mail reader
+### Calendar acceptance gate
 
-### Backend
+Synthetic qualification must cover:
 
-Use Apple Mail's local Envelope Index plus local `.emlx` files. No JXA fallback in the cold-start reader.
+- timed event;
+- all-day event across a daylight-saving boundary;
+- recurring series with at least three occurrences;
+- detached/edited occurrence;
+- event moved between calendars;
+- attendee-linked event;
+- event with notes, location, URL, and time zone;
+- overlapping segment boundaries;
+- denied and limited authorization states;
+- simulated full-sync identifier loss;
+- interrupted export and rerun.
 
-The Envelope Index is metadata and routing state. `.emlx` files are the source for locally available full bodies and RFC-style headers.
+Pass only if occurrences remain distinct, all-day dates remain correct, identifier changes reconcile deterministically or stop for review, the 90-day window reconciles, and no EventKit mutation symbol or call is present.
+
+## Mail Collector: separate experimental module
+
+Mail is not part of the first supported-framework release.
+
+### Why it is separate
+
+Mail requires Full Disk Access and depends on undocumented local structures:
+
+- `~/Library/Mail/V*/MailData/Envelope Index`;
+- mailbox URL conventions;
+- Gmail's `labels` join table;
+- Accounts database relationships;
+- `.emlx` path resolution and payload format.
+
+The Apple PIM account-resolution issue demonstrates the failure mode we must avoid: ambiguous local account identities can be swallowed by an `auto` fallback, and a duplicate Message-ID lookup can return the wrong local copy.
+
+### Permission boundary
+
+Proposed bundle identifier:
+
+```text
+com.jordanschwartz.gbrain.coldstart.mail
+```
+
+The Mail collector has its own visible application identity and no Contacts or Calendar entitlement.
+
+The first Mail work item is a feasibility spike that answers whether the required reads can be qualified while App Sandbox remains enabled. The decision rule is fixed:
+
+- if sandboxed access works with a narrowly user-selected Mail source and Full Disk Access, keep App Sandbox;
+- if it does not, an unsandboxed exception requires a separate human security approval, Hardened Runtime, no network functionality, fixed source paths, and stronger runtime tracing;
+- if neither path can be qualified, Mail remains file-export-only.
+
+The implementation must not silently disable App Sandbox to make the test pass.
+
+### Schema gate
+
+Before returning any message record, the collector computes and checks a compatibility fingerprint containing at least:
+
+- macOS version and build;
+- discovered Mail `V*` store version;
+- normalized `sqlite_master` schema hash;
+- required table and column set;
+- `PRAGMA user_version` and other relevant pragmas;
+- Accounts-store schema fingerprint if that store is consulted;
+- `.emlx` location strategy version.
+
+Only explicitly reviewed fingerprints are accepted. An unknown fingerprint returns `unavailable` with a private diagnostic and no records.
 
 ### Engine policy
 
-There is no `auto` mode in the cold-start reader.
+- SQLite is opened with `SQLITE_OPEN_READONLY`.
+- `PRAGMA query_only = 1` is set and verified.
+- Metadata is read inside one read transaction.
+- There is no `auto` engine.
+- There is no JXA or Mail Automation fallback.
+- Missing local `.emlx` data produces a metadata-only partial record.
+- Display names and email addresses are never durable account identities.
+- Stable account selection uses exact local account UUIDs derived from mailbox/store context.
+- If the Accounts store cannot be mapped safely, human-readable names are omitted rather than guessed.
 
-- If the read-only SQLite index is readable, proceed.
-- If it is not readable, Mail is `unavailable` for that run.
-- If metadata is available but the selected message's `.emlx` body is not locally present, keep the metadata and mark the body unavailable/partial.
-- Never launch or automate Mail.app to make the run succeed.
+### Two-stage Mail flow
 
-This prevents a failed or ambiguous local read from silently switching to a different mechanism with different identity and completeness behavior.
+1. **Inventory run:** approved accounts/mailboxes, bounded dates, headers and metadata only.
+2. **GBrain candidate selection:** existing cold-start rules identify sent, flagged, active, and person-linked candidates.
+3. **User review:** the Mail collector displays the exact candidate count and scope.
+4. **Body run:** fetch only approved bodies and headers from local `.emlx` files.
 
-### Account identity
+The collector does not decide what becomes durable knowledge.
 
-Internally scope accounts by stable local account UUIDs derived from the local Mail/Accounts stores. Display names and email addresses are selection aids only, never durable account keys.
+### Mail identity and races
 
-If a human-readable account selection maps to more than one local account, fail with an explicit ambiguity result and require selection by stable ID. Never take the first match.
+The exact snapshot locator may use the local store fingerprint plus Envelope Index row ID. That locator is not stable across an index rebuild.
 
-### Gmail labels
+Cross-run reconciliation uses only a unique combination of:
 
-Support the `labels` join table so Gmail mailbox membership is correctly represented when messages physically live in `[Gmail]/All Mail`.
-
-### Required metadata
-
-Preserve where available:
-
-- Envelope Index row ID as local record locator;
+- stable local account UUID;
+- physical/logical mailbox context;
 - RFC Message-ID;
-- subject and subject prefix;
-- sender address/display name;
-- To and Cc recipients;
-- date sent/received;
-- read and flagged state as observed metadata only;
-- physical and logical mailbox identity;
-- stable account UUID;
-- attachment names/count, without copying attachment bytes by default;
-- full local body and relevant headers when `.emlx` is present.
+- sent/received date;
+- sender/recipient envelope;
+- local body or header hash when available.
 
-### Message identity
+Duplicate Message-IDs or several equally plausible local copies fail closed.
 
-RFC Message-ID alone is not sufficient because multiple local copies can exist across accounts or mailboxes. The private source identity must include stable local account context and enough local record information to select the same copy deterministically on rerun.
+For every `.emlx` read, capture file identity, size, modification time, and hash before accepting the parse. If the file changes during the read, mark the record partial and retry only under a fresh user-confirmed run.
 
-Any duplicate or ambiguous Message-ID lookup must fail closed unless account/mailbox context uniquely identifies a copy.
+### Mail acceptance gate
 
-### Cold-start sampling
+Qualification uses a dedicated synthetic account or bounded synthetic mailbox and covers:
 
-The reader supplies deterministic primitives. The GBrain skill retains the policy:
+- direct received and sent messages;
+- flagged metadata;
+- multiple recipients;
+- duplicate Message-ID copies;
+- Gmail label membership fixture;
+- local body present;
+- metadata present but body unavailable;
+- index rebuild simulation;
+- unknown schema fingerprint;
+- concurrent `.emlx` change;
+- denied Full Disk Access;
+- proof that no Mail Automation prompt occurs.
 
-1. sent mail from the last 30 days;
-2. flagged/important candidates;
-3. threads with 3+ replies;
-4. mail involving existing people;
-5. noise filtering and candidate review before body fetch.
+Mail cannot admit personal data until this separate gate passes on the exact macOS build and collector build being used.
 
-The reader must not independently decide which messages become GBrain knowledge.
+## Messages Export Adapter
 
-## Messages reader
+### V1 decision
 
-### Backend
+Do not build a native Messages database parser in the first release.
 
-Read `~/Library/Messages/chat.db` directly in read-only mode.
+Use a separately installed, immutable `imessage-exporter` release because it already handles a much broader and more current range of iMessage, SMS, MMS, RCS, group, reply, reaction, edited-message, attachment, and typedstream cases than the reviewed MCP implementations.
 
-### Chat-scoped model
+### Licensing boundary
 
-Conversation reads must join through `chat_message_join` and identify a chat first. Do not implement "conversation with X" as a raw handle filter over the global message table. That produces incorrect results for group conversations and can mix messages from unrelated chats containing the same participant.
+`imessage-exporter` is GPL-3.0.
 
-### Required output
+V1 may invoke a separately installed executable and ingest its output, but the project must not copy, link, vendor, or bundle its implementation into the MIT collector repository without a deliberate license review and acceptance of the resulting obligations. This document does not make a legal conclusion about every distribution arrangement.
 
-Preserve where available:
+### Execution boundary
 
-- stable chat GUID/row identity;
-- chat display name;
-- complete participant handles for the selected chat;
-- message row ID/GUID;
-- sender handle or explicit `isFromMe` state;
-- timestamp;
-- service/type where available;
-- plain message text;
-- attachment metadata without copying attachment bytes;
-- reply/reaction/edit metadata where it can be decoded reliably in V1;
-- explicit unsupported-content markers rather than fabricated text.
+The user runs the pinned exporter explicitly. GBrain does not invoke it unattended.
 
-### Attributed bodies
+The qualified command shape is limited to:
 
-Many Messages rows may not have usable text in the plain `text` column. The reader should use the PyApple approach as the reference: attempt a real macOS unarchive/typedstream-compatible decode before heuristic salvage.
+```bash
+imessage-exporter \
+  --format txt \
+  --copy-method disabled \
+  --start-date <YYYY-MM-DD> \
+  --end-date <YYYY-MM-DD> \
+  --conversation-filter <approved participants> \
+  --export-path <private run directory> \
+  --no-progress
+```
 
-If content cannot be decoded, return an explicit unreadable-content marker plus raw-type metadata. Do not treat undecodable content as an empty message.
+The exact release, executable path, SHA-256, version output, command arguments, scope hash, and output hashes are recorded.
 
-### Pagination and truncation
+### Output parser
 
-Every chat read reports:
+The export is the canonical raw evidence input for V1. A GBrain parser is qualified against the exact pinned release and checked-in synthetic fixtures.
 
-- total messages in the requested window when reasonably computable;
-- number returned;
-- whether the result is truncated;
-- an opaque cursor or deterministic boundary for the next older page.
+The parser must:
 
-This is required because the newest N messages and the complete conversation must never serialize identically.
+- preserve the raw transcript unchanged;
+- report files and records it cannot parse;
+- never fabricate missing participant, timestamp, reaction, or message text fields;
+- preserve group-conversation boundaries;
+- expose truncation or omitted-attachment facts from the export receipt;
+- fail closed if the exporter format changes.
 
-### Coverage
-
-The reader claims only what is present in the local Messages database. It must not claim iCloud-wide history or device-complete history if the Mac has not synchronized it.
+If the text format cannot support trustworthy structured normalization, GBrain imports the reviewed raw transcript as a conversation artifact rather than pretending it has message-level structure.
 
 ## iCloud Drive and local archives
 
-No custom native Apple reader is required in V1.
+No custom iCloud API or broad crawler is added to the Apple collectors.
 
-The existing GBrain archive/file workflow should operate only on explicitly approved local filesystem paths, including approved paths beneath the user's iCloud Drive container. The Apple reader may expose a `doctor` helper that resolves whether an approved path is present locally, but it does not crawl arbitrary iCloud Drive contents.
+The existing GBrain archive workflow operates only on explicit local paths selected by the user. iCloud Drive content must be fully local before ingestion, and the normal archive manifest/review gate applies.
 
-## Notes and Reminders
+The Apple collector does not recursively enumerate iCloud Drive, request iCloud credentials, or claim cloud completeness.
 
-Deferred from V1.
+## Build, signing, and TCC
 
-If Notes is added later, use read-only Apple Events and `plaintext`, not HTML `body`, for normal text reads. The later design must preserve explicit truncation and distinguish Notes failures from an empty store.
+### Xcode path
 
-If Reminders is added later, use EventKit and the same immutable read-only command-surface principle as Calendar.
+Contacts and Calendar collectors are normal macOS application targets built in Xcode with:
 
-## CLI surface
+- fixed bundle identifiers;
+- Automatic Signing;
+- Apple Development signing for local owner qualification;
+- Hardened Runtime;
+- target-specific entitlements;
+- embedded provisioning metadata where Xcode requires it;
+- release configuration with debug/get-task-allow disabled.
 
-V1 should expose a small command tree approximately like:
+Developer ID signing and notarization are considered only if the app is distributed outside the owner's development environment.
+
+Do not use a shell script as `CFBundleExecutable`. Do not use `codesign --deep` to sign the product. Sign nested code in the correct inside-out order or let Xcode own the signing process.
+
+### Code identity receipt
+
+Every collector run records:
+
+- bundle identifier;
+- semantic version and build number;
+- source commit;
+- Team ID;
+- designated requirement;
+- CDHash/code-directory identity;
+- entitlements actually present in the signed app;
+- executable SHA-256;
+- provisioning profile identity where present;
+- macOS version, build, and architecture.
+
+Changing a bundle identifier or signing lineage after qualification is a breaking permission migration and requires requalification.
+
+### No ambient headless mode
+
+Production collectors have no command-line export mode. Test-only seams are compiled only into test builds and cannot be activated by an environment variable in a production binary.
+
+A future unattended mode would require a separate design with authenticated IPC, caller code-signing validation or launch constraints, replay protection, scope capabilities, audit, and revocation. It is not authorized by this document.
+
+## No-network boundary
+
+Contacts and Calendar collectors have no network client/server entitlements and no application-level network feature. They read local framework state; Apple system services may independently synchronize that state outside the collector's process, so receipts claim only the local state observed at collection time.
+
+The Mail collector, if approved unsandboxed, must still contain no network feature, updater, telemetry, SMTP, IMAP client, HTTP client, or remote error reporting. Qualification includes runtime network observation rather than relying only on source inspection.
+
+No collector automatically checks GitHub, downloads a binary, updates itself, or resolves a floating package version.
+
+## GBrain integration
+
+The unprivileged GBrain side:
+
+1. creates a bounded request descriptor;
+2. opens the appropriate visible collector;
+3. tells the user what permission and scope will be requested;
+4. waits for a completed snapshot rather than polling protected Apple stores;
+5. validates `COMPLETE`, manifests, schema versions, hashes, code identity, and expected request digest;
+6. copies or parses records into the private per-run staging area;
+7. runs existing filtering, deduplication, significance, entity linking, provenance, and sample review;
+8. writes only approved normalized Markdown to stable local GBrain sources;
+9. records an import receipt and schedules raw-snapshot cleanup;
+10. never grants an imported string control over a command, path, SQL statement, template, or tool call.
+
+The collector never calls GBrain database operations itself.
+
+## Error semantics
+
+Every domain follows these rules:
+
+1. **Unavailable is not empty.** Permission denial, missing local synchronization, schema mismatch, inaccessible store, or parser incompatibility produces `unavailable` or `error`.
+2. **Partial is explicit.** Missing body files, unreadable content, result limits, changed source files, unsupported records, or incomplete segments survive into the receipt.
+3. **Ambiguity stops automatic reconciliation.** The system never selects the first matching account, contact, calendar event, message copy, or chat.
+4. **No semantic fallback.** A failed Mail SQLite read never becomes JXA. A failed structured Messages parse becomes a raw transcript, not invented structure.
+5. **Limits are visible.** Returned count, observed count, segment/window, and continuation state are explicit.
+6. **Cancellation is normal.** User cancellation writes no completed snapshot and is not treated as a collector error.
+
+## Privacy and data lifecycle
+
+- The snapshot root is local and excluded from sync services and Git.
+- General logs contain no names, phone numbers, addresses, subjects, titles, notes, bodies, participant handles, or raw local identifiers.
+- Private diagnostics remain in the run directory and inherit owner-only permissions.
+- Crash reporting and telemetry are disabled.
+- Clipboard use is prohibited.
+- Raw attachment bytes are not copied in V1.
+- `doctor` may warn when FileVault is disabled but does not alter system settings.
+- GBrain deletes a raw snapshot after successful reviewed import or after seven days, whichever occurs first, unless the user explicitly retains it.
+- Public receipts and normalized accepted Markdown may remain; private raw records and private identity maps follow the user's local backup policy.
+- Cleanup is receipt-driven and never deletes Apple source data.
+
+## Qualification strategy
+
+### Static build checks
+
+For every release build:
+
+- inspect the production command/action registry;
+- scan source and linked symbols for forbidden framework APIs and mutation verbs;
+- verify target entitlements with `codesign`;
+- verify App Sandbox for Contacts and Calendar;
+- verify no network entitlements;
+- verify no generic `osascript`, shell, raw SQL input, or arbitrary subprocess surface;
+- inspect dynamic libraries and embedded tools;
+- verify no unreviewed upstream file or dependency drift;
+- validate every JSON/NDJSON record against checked-in schemas;
+- fail CI if attribution or `UPSTREAM.md` is stale.
+
+Forbidden API checks are defense in depth, not proof by themselves. Runtime and end-to-end tests remain mandatory.
+
+### Runtime read-only evidence
+
+For each domain:
+
+- create only fictional deterministic source records;
+- capture an independent semantic before-state;
+- trace collector file writes and confirm they remain inside its container and selected output root;
+- observe process/network activity;
+- run the complete UI request-to-snapshot path;
+- capture an independent semantic after-state;
+- compare source records and user-visible state;
+- inspect the final signed binary, not only a debug build;
+- prove denial, cancellation, interruption, and malformed-request behavior.
+
+Filesystem metadata changes caused by Apple daemons or cache reads are not automatically source mutations. Acceptance is based on API-enforced read-only database opens, absence of write code, process-attributed tracing, and unchanged semantic records.
+
+### Seam tests
+
+The qualification suite must test the entire chain:
 
 ```text
-cold-start-apple-reader doctor
-cold-start-apple-reader contacts containers
-cold-start-apple-reader contacts list
-cold-start-apple-reader contacts get --id <stable-id>
-cold-start-apple-reader calendar calendars
-cold-start-apple-reader calendar events --from <iso> --to <iso>
-cold-start-apple-reader mail accounts
-cold-start-apple-reader mail mailboxes --account-id <stable-id>
-cold-start-apple-reader mail messages ...
-cold-start-apple-reader mail get --local-id <id> --account-id <stable-id>
-cold-start-apple-reader messages chats ...
-cold-start-apple-reader messages read --chat-id <stable-id> ...
+request document
+→ visible effective-scope UI
+→ user confirmation
+→ framework/private-store reader
+→ snapshot writer
+→ manifest/hash validator
+→ GBrain parser
+→ normalized staging output
 ```
 
-No generic script execution and no hidden write verbs are shipped.
+Handler-only tests are insufficient. PyApple's history includes a case where correct lower-level behavior shipped inert because both front ends forced a default. The project therefore tests every production seam and derives action lists from one authoritative schema rather than duplicating hand-maintained registries.
 
-All normal output is JSON on stdout. Diagnostics and non-sensitive progress go to stderr. Source bodies, contact details, phone numbers, addresses, and subjects must not appear in general logs.
+### Supply-chain checks
 
-## GBrain integration flow
+- pin exact source commits and package versions;
+- verify downloaded release hashes before first use;
+- never use `npx -y`, floating Git branches, unpinned Cargo installs, or automatic Homebrew upgrades in qualification;
+- build from reviewed source where practical;
+- record compiler/Xcode/Swift versions;
+- regenerate and review upstream diffs before upgrading.
 
-1. `cold-start-apple` asks for consent for the phase.
-2. It invokes `doctor` and records adapter version, code signature, executable hash, schema version, and permission/coverage state.
-3. The user approves source containers/calendars/accounts/chats.
-4. GBrain stores a private scope map using stable IDs and hashes sensitive scope identifiers in shareable receipts.
-5. The reader writes raw JSON only into the private per-run cold-start workspace.
-6. GBrain normalizes raw records into deterministic Markdown staging repositories.
-7. Existing GBrain deduplication, filtering, significance, enrichment, page review, and provenance rules run unchanged.
-8. Only reviewed/accepted Markdown becomes a stable GBrain source.
-9. Reruns reuse source IDs, stable source keys, identity-map version, and content hashes.
+## Approval gates
 
-The reader never calls GBrain database operations itself.
+### Gate A: Revised architecture approval
 
-## Error-handling principles
+Pass when this design is accepted. No code or new repository is created before this gate.
 
-1. **Fail closed on ambiguity.** Never select the first matching account, message copy, chat, or calendar when multiple candidates remain.
-2. **Unavailable is not empty.** Permission failures, schema incompatibility, missing local files, or source corruption must not produce a normal empty result.
-3. **Partial is explicit.** Missing `.emlx` bodies, truncation, unsupported attributed-body content, or locally incomplete synchronization must survive into the receipt.
-4. **No fallback that changes semantics.** In particular, Mail SQLite failure never falls through to JXA in V1.
-5. **Bound expensive reads.** Every list/read accepts deterministic limits or windows and exposes continuation rather than hanging or silently clipping.
-6. **Never mutate while diagnosing.** `doctor` only probes authorization/readability and never resets TCC, launches target apps to force prompts, or modifies Apple stores.
+### Gate B: Contacts Collector qualification
 
-## Versioning and receipts
+Pass only after static, UI, permission, identity, privacy, and synthetic rerun tests pass on the final signed build.
 
-Every run records at minimum:
+### Gate C: Calendar Collector qualification
 
-- reader semantic version;
-- source commit/release identifier;
-- JSON schema version;
-- executable SHA-256;
-- code-signature identity/hash;
-- macOS version and architecture;
-- relevant local schema/version observations such as Mail `V*` store version;
-- approved scope hash;
-- requested date windows;
-- per-domain coverage and counts;
-- warnings and unsupported-record counts.
+Pass only after recurrence, all-day, move/sync identity, full-access disclosure, segmentation, and synthetic rerun tests pass.
 
-A documented command or JSON schema change requires either a backward-compatible parser or a deliberate reader-version upgrade in the GBrain skill. GBrain must not continue after an unrecognized reader schema.
+### Gate D: Core GBrain integration qualification
 
-## Licensing and attribution
+Pass only when completed snapshots validate and produce deterministic staging Markdown without granting GBrain Apple permissions.
 
-The reader may incorporate MIT-licensed code from Apple PIM, PyApple MCP, macos-mcp, and Orchard MCP with appropriate copyright/license notices and file-level attribution where required.
+### Gate M0: Mail feasibility
 
-Keep an `UPSTREAM.md` or equivalent manifest containing:
+Answer, with evidence, whether sandboxed collection is possible and which exact private schemas are present. This gate produces no personal-data importer.
 
-- upstream repository;
-- upstream commit used;
-- files/ideas incorporated;
-- local modifications;
-- license.
+### Gate M1: Mail synthetic qualification
 
-Do not copy GPL-3.0 implementation code from `imessage-exporter` into a permissively licensed reader. Treat that project as a separately installed qualification tool only.
+Pass only on the exact OS/schema/build combination after all Mail-specific tests and read-only evidence pass.
 
-## Upstream maintenance strategy
+### Gate X: Messages adapter qualification
 
-The new reader should preserve Apple PIM as an `upstream` Git remote during development, but it is intentionally a narrowed derivative rather than a long-lived feature-compatible fork.
+Pass only after selecting an immutable exporter release, reviewing its source/release artifact, pinning its hash, and qualifying the output parser on synthetic fixtures.
 
-Upstream updates are reviewed by subsystem:
+### Real-data admission
 
-- Contacts.framework fixes;
-- EventKit/macOS permission fixes;
-- Mail Envelope Index schema fixes;
-- `.emlx` parsing fixes;
-- helper-app/TCC fixes.
+Approval is domain-specific. Passing Contacts does not authorize Calendar, Mail, or Messages data. No real personal data is admitted to a domain before its own gate passes.
 
-General agent features, write features, SMTP, MCP, OpenClaw, and mail-channel features are not merged by default.
+## Changes required in `cold-start-apple`
 
-Maintain a small upstream-diff checklist so an Apple PIM release can be assessed without repeatedly re-auditing unrelated functionality.
+After the corresponding collectors are qualified, update the existing draft skill to:
 
-## Qualification plan
+1. replace direct Apple PIM CLI installation with visible collector request/export steps;
+2. remove command allowlists as the primary safety boundary;
+3. describe Calendar full access honestly rather than calling the OS permission read-only;
+4. omit Contacts notes;
+5. replace durable-ID claims with versioned locator/reconciliation behavior;
+6. use separate Contacts and Calendar phases/app identities;
+7. keep Mail disabled until Gate M1 passes for the exact local schema;
+8. remove Mail `--engine auto` and every JXA fallback;
+9. use stable local account UUID selection and fail closed on ambiguity;
+10. use a separately installed pinned `imessage-exporter` step for Messages;
+11. preserve raw Messages transcripts and fail closed on parser drift;
+12. add request digest, code identity, schema fingerprint, output hashes, and coverage to Phase 0 receipts;
+13. preserve all existing consent, sampling, review, provenance, no-deletion, and stable-source-repository rules.
 
-No personal data is admitted during reader qualification unless a later explicit approval changes that boundary. Initial qualification should use synthetic records created manually in the native apps, then read them through the reader.
+Do not implement these changes on the heavily diverged historical `agent/cold-start-apple` branch. Use a fresh branch from then-current GBrain `master` after the relevant collector contract is qualified.
 
-### Static acceptance checks
+## Implementation decomposition
 
-- production command registry contains only approved read verbs;
-- no SMTP/IMAP mutation or secrets implementation is linked into the binary;
-- no Contacts save request is reachable;
-- no EventKit save/remove call is reachable;
-- no Messages send Apple Event is reachable;
-- no generic AppleScript/JXA execution endpoint exists;
-- SQLite opens are demonstrably read-only;
-- stdout JSON validates against the checked-in schema.
+This architecture is too large for one implementation plan. After approval, produce separate plans in this order:
 
-### Contacts tests
+1. **Contacts Collector plan** — repository skeleton, Xcode target, signing, sandbox, request UI, snapshot protocol subset, identity model, synthetic fixtures, and Gate B.
+2. **Calendar Collector plan** — separate target, full-access disclosure, segmented EventKit reader, recurrence identity, all-day semantics, and Gate C.
+3. **Snapshot Validator and GBrain Adapter plan** — shared schemas, hashes, incomplete-run handling, parsing, staging, receipts, and Gate D.
+4. **Mail feasibility plan** — no importer yet; establish sandbox/FDA behavior and schema inventory for Gate M0.
+5. **Mail Collector plan** — only after M0 approval; exact allowlist, two-stage inventory/body flow, and Gate M1.
+6. **Messages Adapter plan** — immutable exporter selection, licensing boundary, user-run command, parser fixtures, and Gate X.
+7. **GBrain skill integration plan** — update `cold-start-apple` only for collectors whose gates have passed.
 
-Use synthetic contacts covering:
+The next implementation plan, if this revision is approved, is **Contacts Collector only**.
 
-- ordinary person;
-- organization-only contact;
-- multiple emails/phones;
-- birthday;
-- linked/source-card edge case;
-- contact with a note when entitlement is unavailable.
+## Decision locks
 
-Pass only if counts reconcile, stable IDs survive rerun, unavailable note fields are explicit, and a second identical run changes no normalized output.
+The following decisions are now explicit and require a new design review to change:
 
-### Calendar tests
+- no unattended privileged collector in V1;
+- no single application identity with Contacts, Calendar, and Full Disk Access;
+- no Contacts notes in V1;
+- no Mail Automation/JXA fallback;
+- no unknown private Mail schema;
+- no custom native Messages parser in the first release;
+- no bundled GPL Messages implementation without a license decision;
+- no automatic merge from Apple PIM upstream;
+- no real personal data before per-domain synthetic qualification.
 
-Use synthetic events covering:
+## Evidence references
 
-- timed event;
-- all-day event;
-- recurring series with at least three occurrences;
-- attendee-linked event;
-- event with notes/location/URL.
+### Apple documentation
 
-Pass only if every recurrence occurrence receives a distinct stable key, the 90-day window reconciles, and rerun is duplicate-free.
+- [Accessing the event store](https://developer.apple.com/documentation/eventkit/accessing-the-event-store)
+- [App Sandbox](https://developer.apple.com/documentation/security/app-sandbox)
+- [Protecting user data with App Sandbox](https://developer.apple.com/documentation/security/protecting-user-data-with-app-sandbox)
+- [`calendarItemIdentifier`](https://developer.apple.com/documentation/eventkit/ekcalendaritem/calendaritemidentifier)
+- [`eventIdentifier`](https://developer.apple.com/documentation/EventKit/EKEvent/eventIdentifier)
+- [Contacts framework](https://developer.apple.com/documentation/contacts)
+- [`unifiedContact(withIdentifier:keysToFetch:)`](https://developer.apple.com/documentation/contacts/cncontactstore/unifiedcontact%28withidentifier%3Akeystofetch%3A%29)
+- [`CNContactFetchRequest.unifyResults`](https://developer.apple.com/documentation/contacts/cncontactfetchrequest/unifyresults)
+- [`com.apple.developer.contacts.notes`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.contacts.notes)
+- [Creating distribution-signed code for macOS](https://developer.apple.com/documentation/xcode/creating-distribution-signed-code-for-the-mac/)
+- [Security-scoped bookmarks](https://developer.apple.com/documentation/foundation/nsurl/bookmarkcreationoptions/withsecurityscope)
 
-### Mail tests
+### Upstream evidence
 
-Use a dedicated synthetic mail account or bounded synthetic mailbox where practical.
+- [Apple PIM helper dispatcher at reviewed revision](https://github.com/omarshahine/apple-pim/blob/18b8f91a48e537567151553bcb720eb2ee84d770/helper/pim-helper)
+- [Apple PIM Mail account ambiguity issue #106](https://github.com/omarshahine/apple-pim/issues/106)
+- [Apple PIM read-only Envelope Index implementation](https://github.com/omarshahine/apple-pim/blob/18b8f91a48e537567151553bcb720eb2ee84d770/swift/Sources/MailCLI/EnvelopeIndex.swift)
+- [PyApple Messages implementation at reviewed revision](https://github.com/54yyyu/pyapple-mcp/blob/9844fa276474434be92b0ac16be6b43a7bd135f0/pyapple_mcp/utils/messages.py)
+- [PyApple Calendar implementation at reviewed revision](https://github.com/54yyyu/pyapple-mcp/blob/9844fa276474434be92b0ac16be6b43a7bd135f0/pyapple_mcp/utils/calendar.py)
+- [macos-mcp architecture decisions](https://github.com/krmj22/macos-mcp/blob/5b1561b00894b2f48aed7a46d6e105ae9556e23d/DECISION.md)
+- [Orchard Contacts implementation](https://github.com/l22-io/orchard-mcp/blob/0de0967a1d298286f0101aec230ea86aaada8404/swift/Sources/AppleBridge/Contacts.swift)
+- [`imessage-exporter` reviewed revision](https://github.com/ReagentX/imessage-exporter/tree/d372aa97e52d5987d0c8bb1dd4a1a37024b24d00)
 
-Cover:
+## Final recommendation
 
-- direct received message;
-- sent message;
-- flagged message;
-- multi-recipient message;
-- duplicate Message-ID/local copies;
-- body present as `.emlx`;
-- metadata present but body unavailable;
-- Gmail-label fixture if a Gmail-style fixture can be built safely.
+Proceed only with the revised split architecture.
 
-Pass only if the reader never falls back to Mail Automation, ambiguous copies fail closed, missing bodies are partial rather than empty, and the source store is unchanged.
-
-### Messages tests
-
-Use synthetic conversations covering:
-
-- one-to-one chat;
-- group chat with several participants;
-- incoming and outgoing messages;
-- attachment-only row;
-- reaction/reply where supported;
-- attributed-body-only text;
-- page larger than the result limit.
-
-Compare selected expected records with `imessage-exporter` as an external oracle where licensing and installation allow. Pass only if group messages do not bleed across chats, truncation is explicit, and unreadable records are not silently omitted.
-
-### Read-only evidence
-
-For each domain, capture before/after evidence showing no Apple store mutation attributable to the reader. The exact evidence mechanism may differ by store, but qualification must include timestamps/counts or equivalent receipts sufficient to detect accidental writes.
-
-## Changes required in GBrain's current `cold-start-apple` skill
-
-The existing draft should be updated after the reader exists and is qualified:
-
-1. replace direct Apple PIM installation with a pinned `cold-start-apple-reader` release/commit;
-2. replace command allowlists with the reader's inherently read-only command surface;
-3. remove Mail `--engine auto` and JXA fallback language;
-4. scope Mail by stable account ID rather than display name;
-5. change Calendar durable identity from `eventIdentifier` alone to occurrence-aware identity;
-6. replace `imessage-exporter` as the primary Messages ingestion mechanism with the native read-only Messages reader;
-7. keep `imessage-exporter` optional as a qualification/reference tool;
-8. update Phase 0 receipts to include reader schema version, executable hash, and code-signature identity;
-9. preserve every existing consent, sampling, quality, normalization, source-repo, and no-deletion rule unless separately reviewed.
-
-## Repository strategy
-
-Do not implement this inside the heavily diverged historical `agent/cold-start-apple` branch.
-
-Design work starts from current GBrain `master`. The native reader should then be created as a separate repository derived from Apple PIM, with its own tests and releases. GBrain integration work should happen on a fresh feature branch from then-current GBrain `master` after the reader interface is qualified.
-
-This separation keeps:
-
-- macOS native code and TCC qualification independent of GBrain's database/runtime changes;
-- upstream Apple PIM tracking manageable;
-- licensing attribution clear;
-- GBrain's skill changes small and reviewable.
-
-## Implementation boundary
-
-Implementation starts only after this design is reviewed. The first implementation plan should decompose work into independently verifiable phases:
-
-1. create narrowed reader repository and upstream manifest;
-2. establish helper-app identity and read-only command registry;
-3. port/retain Contacts reader;
-4. port/retain Calendar reader plus occurrence/completeness fixes;
-5. port/retain Mail SQLite + `.emlx` reader with fail-closed account identity;
-6. implement Messages reader with chat-scoped and truncation semantics;
-7. add common JSON envelope and doctor/receipts;
-8. run static and synthetic qualification;
-9. only then update GBrain `cold-start-apple` to consume the qualified reader.
-
-No step admits real personal data merely because earlier unit tests pass.
+The original monolithic helper should not be implemented. The first build should be a sandboxed, visible, user-confirmed **Contacts Collector** with no network capability, no mutation code, explicit raw/unified identity handling, and synthetic-only qualification. Calendar follows as a separate target. Mail and Messages remain independent add-ons until their own evidence gates pass.
