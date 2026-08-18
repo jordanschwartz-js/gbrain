@@ -1,40 +1,83 @@
 # Contacts Collector Scaffolding and Schema Appendix
 
 **Plan:** `docs/superpowers/plans/2026-08-18-contacts-collector.md`  
-**Contract:** `docs/superpowers/plans/2026-08-18-contacts-collector-contract.md`  
+**Normative contract:** `docs/superpowers/plans/2026-08-18-contacts-collector-contract.md`  
 **Status:** Required execution appendix
 
-This appendix supplies exact package manifests, test-target boundaries, helper-script contracts, checked-in wire schemas, and documentation deliverables that the task plan names but does not repeat in full. The three files together are one implementation plan.
+This appendix supplies exact package manifests, Xcode target boundaries, script contracts, schema inventory, and documentation outputs. It contains no illustrative invalid commands. The task plan, contract, and this appendix together form the Contacts implementation plan.
 
-## 1. Additional Required Paths
-
-Add these paths to the implementation repository map:
+## 1. Required repository layout
 
 ```text
-Schemas/
-├── collector-request-v1.schema.json
-├── collector-enrollment-v1.schema.json
-├── contacts-record-v1.schema.json
-├── snapshot-manifest-v2.schema.json
-├── public-receipt-v1.schema.json
-└── validation-receipt-v1.schema.json
-
-script/
-├── validate_fixtures.py
-├── resolve_github_action_lock.sh
-└── check_docs_and_attribution.sh
-
-Tools/
-└── GitHubActions.lock.json
+cold-start-apple-collectors/
+├── project.yml
+├── ColdStartAppleCollectors.xcodeproj/
+├── Config/
+│   ├── Base.xcconfig
+│   ├── Debug.xcconfig
+│   ├── Release.xcconfig
+│   └── Local.xcconfig.example
+├── Tools/
+│   ├── XcodeGen.lock.json
+│   └── GitHubActions.lock.json
+├── Schemas/
+│   ├── collector-request-v1.schema.json
+│   ├── collector-enrollment-v1.schema.json
+│   ├── contacts-record-v1.schema.json
+│   ├── snapshot-manifest-v2.schema.json
+│   ├── public-receipt-v1.schema.json
+│   └── validation-receipt-v1.schema.json
+├── Packages/
+│   ├── SnapshotProtocol/
+│   ├── ContactsDomain/
+│   ├── ContactsCollectorFeature/
+│   └── SnapshotValidatorKit/
+├── Apps/
+│   ├── ContactsCollector/
+│   ├── ContactsCollectorTestHost/
+│   └── SnapshotValidator/
+├── Tests/
+│   ├── ContactsCollectorTests/
+│   ├── SnapshotValidatorTests/
+│   └── ContactsCollectorUITests/
+├── Fixtures/
+│   ├── Requests/
+│   ├── Contacts/
+│   ├── Snapshots/
+│   └── Crypto/
+├── Qualification/Contacts/
+│   ├── README.md
+│   ├── synthetic-fixture-register.md
+│   ├── gate-b-checklist.md
+│   └── report-template.md
+├── script/
+│   ├── bootstrap_xcodegen.sh
+│   ├── write_local_signing_config.sh
+│   ├── generate_project.sh
+│   ├── build_and_run.sh
+│   ├── test_packages.sh
+│   ├── test_apps.sh
+│   ├── validate_fixtures.py
+│   ├── verify_project_shape.sh
+│   ├── scan_forbidden_apis.sh
+│   ├── inspect_entitlements.sh
+│   ├── check_docs_and_attribution.sh
+│   ├── resolve_github_action_lock.sh
+│   ├── verify_release.sh
+│   └── qualify_contacts.sh
+├── .codex/environments/environment.toml
+├── .github/workflows/ci.yml
+├── .gitignore
+├── LICENSE
+├── NOTICE
+├── README.md
+├── SECURITY.md
+└── UPSTREAM.md
 ```
 
-The repository also contains nonempty `README.md`, `LICENSE`, `NOTICE`, `SECURITY.md`, and `Qualification/Contacts/README.md` before Task 17 is complete.
+## 2. Exact Swift package manifests
 
-## 2. Exact Swift Package Manifests
-
-### 2.1 SnapshotProtocol
-
-`Packages/SnapshotProtocol/Package.swift`:
+### 2.1 `Packages/SnapshotProtocol/Package.swift`
 
 ```swift
 // swift-tools-version: 6.0
@@ -57,9 +100,7 @@ let package = Package(
 )
 ```
 
-### 2.2 ContactsDomain
-
-`Packages/ContactsDomain/Package.swift`:
+### 2.2 `Packages/ContactsDomain/Package.swift`
 
 ```swift
 // swift-tools-version: 6.0
@@ -92,9 +133,7 @@ let package = Package(
 )
 ```
 
-### 2.3 ContactsCollectorFeature
-
-`Packages/ContactsCollectorFeature/Package.swift`:
+### 2.3 `Packages/ContactsCollectorFeature/Package.swift`
 
 ```swift
 // swift-tools-version: 6.0
@@ -126,11 +165,7 @@ let package = Package(
 )
 ```
 
-The feature target imports SwiftUI and Foundation only. It does not import Contacts, Security, CryptoKit, LocalAuthentication, or AppKit.
-
-### 2.4 SnapshotValidatorKit
-
-`Packages/SnapshotValidatorKit/Package.swift`:
+### 2.4 `Packages/SnapshotValidatorKit/Package.swift`
 
 ```swift
 // swift-tools-version: 6.0
@@ -163,22 +198,194 @@ let package = Package(
 )
 ```
 
-`SnapshotValidatorKit` may depend on `ContactsDomain` solely to decode and verify the already authenticated `ContactRecord` schema. It still imports no Contacts.framework.
+## 3. Base build configuration
 
-## 3. Required Xcode Test Targets
+`Config/Base.xcconfig`:
 
-Append these targets to `project.yml`:
+```xcconfig
+#include? "Local.xcconfig"
+
+MACOSX_DEPLOYMENT_TARGET = 15.0
+SWIFT_VERSION = 6.0
+SWIFT_STRICT_CONCURRENCY = complete
+CLANG_ENABLE_MODULES = YES
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM = $(GBRAIN_DEVELOPMENT_TEAM)
+ENABLE_HARDENED_RUNTIME = YES
+GENERATE_INFOPLIST_FILE = NO
+MARKETING_VERSION = 0.1.0
+CURRENT_PROJECT_VERSION = 1
+```
+
+`Config/Debug.xcconfig`:
+
+```xcconfig
+#include "Base.xcconfig"
+SWIFT_OPTIMIZATION_LEVEL = -Onone
+DEBUG_INFORMATION_FORMAT = dwarf
+```
+
+`Config/Release.xcconfig`:
+
+```xcconfig
+#include "Base.xcconfig"
+SWIFT_OPTIMIZATION_LEVEL = -O
+DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
+ENABLE_TESTABILITY = NO
+CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO
+```
+
+`Config/Local.xcconfig.example`:
+
+```xcconfig
+GBRAIN_DEVELOPMENT_TEAM = ABCDE12345
+```
+
+## 4. Production property lists and entitlements
+
+### 4.1 Contacts collector entitlements
+
+`Apps/ContactsCollector/Resources/ContactsCollector.entitlements`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.personal-information.addressbook</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>
+```
+
+`Apps/ContactsCollector/Resources/Info.plist` includes:
+
+```xml
+<key>CFBundleDisplayName</key>
+<string>GBrain Contacts Collector</string>
+<key>NSContactsUsageDescription</key>
+<string>GBrain Contacts Collector reads only the contact containers you approve to create a local cold-start snapshot. It does not edit Contacts.</string>
+<key>LSMinimumSystemVersion</key>
+<string>15.0</string>
+<key>NSPrincipalClass</key>
+<string>NSApplication</string>
+```
+
+### 4.2 Validator entitlements
+
+`Apps/SnapshotValidator/Resources/SnapshotValidator.entitlements`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-only</key>
+  <true/>
+</dict>
+</plist>
+```
+
+Validator `Info.plist` includes the display name, `LSMinimumSystemVersion = 15.0`, and `NSPrincipalClass = NSApplication`; it contains no Contacts usage description.
+
+## 5. XcodeGen project contract
+
+`project.yml` declares four local packages and these targets:
 
 ```yaml
+name: ColdStartAppleCollectors
+options:
+  bundleIdPrefix: com.jordanschwartz.gbrain.coldstart
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: Config/Debug.xcconfig
+  Release: Config/Release.xcconfig
+
+packages:
+  SnapshotProtocol:
+    path: Packages/SnapshotProtocol
+  ContactsDomain:
+    path: Packages/ContactsDomain
+  ContactsCollectorFeature:
+    path: Packages/ContactsCollectorFeature
+  SnapshotValidatorKit:
+    path: Packages/SnapshotValidatorKit
+
+targets:
+  ContactsCollector:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/ContactsCollector
+    info:
+      path: Apps/ContactsCollector/Resources/Info.plist
+    entitlements:
+      path: Apps/ContactsCollector/Resources/ContactsCollector.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.contacts
+        PRODUCT_NAME: ContactsCollector
+        CODE_SIGN_ENTITLEMENTS: Apps/ContactsCollector/Resources/ContactsCollector.entitlements
+    dependencies:
+      - package: SnapshotProtocol
+      - package: ContactsDomain
+      - package: ContactsCollectorFeature
+
+  ContactsCollectorTestHost:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/ContactsCollectorTestHost
+    info:
+      path: Apps/ContactsCollectorTestHost/Resources/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.contacts.testhost
+        PRODUCT_NAME: ContactsCollectorTestHost
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        ENABLE_HARDENED_RUNTIME: NO
+    dependencies:
+      - package: SnapshotProtocol
+      - package: ContactsDomain
+      - package: ContactsCollectorFeature
+
+  SnapshotValidator:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/SnapshotValidator
+    info:
+      path: Apps/SnapshotValidator/Resources/Info.plist
+    entitlements:
+      path: Apps/SnapshotValidator/Resources/SnapshotValidator.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.validator
+        PRODUCT_NAME: SnapshotValidator
+        CODE_SIGN_ENTITLEMENTS: Apps/SnapshotValidator/Resources/SnapshotValidator.entitlements
+    dependencies:
+      - package: SnapshotProtocol
+      - package: ContactsDomain
+      - package: SnapshotValidatorKit
+
   ContactsCollectorTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [Tests/ContactsCollectorTests]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.contacts.tests
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/ContactsCollector.app/Contents/MacOS/ContactsCollector"
-        BUNDLE_LOADER: "$(TEST_HOST)"
+    sources:
+      - Tests/ContactsCollectorTests
     dependencies:
       - target: ContactsCollector
       - package: SnapshotProtocol
@@ -188,12 +395,8 @@ Append these targets to `project.yml`:
   SnapshotValidatorTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [Tests/SnapshotValidatorTests]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.validator.tests
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/SnapshotValidator.app/Contents/MacOS/SnapshotValidator"
-        BUNDLE_LOADER: "$(TEST_HOST)"
+    sources:
+      - Tests/SnapshotValidatorTests
     dependencies:
       - target: SnapshotValidator
       - package: SnapshotProtocol
@@ -203,18 +406,11 @@ Append these targets to `project.yml`:
   ContactsCollectorUITests:
     type: bundle.ui-testing
     platform: macOS
-    sources: [Tests/ContactsCollectorUITests]
-    settings:
-      base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.jordanschwartz.gbrain.coldstart.contacts.uitests
-        TEST_TARGET_NAME: ContactsCollectorTestHost
+    sources:
+      - Tests/ContactsCollectorUITests
     dependencies:
       - target: ContactsCollectorTestHost
-```
 
-Create explicit schemes:
-
-```yaml
 schemes:
   ContactsCollector:
     build:
@@ -222,28 +418,57 @@ schemes:
         ContactsCollector: all
         ContactsCollectorTests: [test]
     test:
-      targets: [ContactsCollectorTests]
+      targets:
+        - ContactsCollectorTests
+
   ContactsCollectorTestHost:
     build:
       targets:
         ContactsCollectorTestHost: all
         ContactsCollectorUITests: [test]
     test:
-      targets: [ContactsCollectorUITests]
+      targets:
+        - ContactsCollectorUITests
+
   SnapshotValidator:
     build:
       targets:
         SnapshotValidator: all
         SnapshotValidatorTests: [test]
     test:
-      targets: [SnapshotValidatorTests]
+      targets:
+        - SnapshotValidatorTests
 ```
 
-After generation, `xcodebuild -list` must show all three schemes. The generated project is committed, and `generate_project.sh --check` regenerates to a temporary directory and compares `project.pbxproj` deterministically.
+After generation, `xcodebuild -list` must show all three schemes.
 
-## 4. Exact Helper-Script Contracts
+## 6. XcodeGen bootstrap
 
-### 4.1 `script/generate_project.sh`
+XcodeGen is development tooling only. Pin tag `2.46.0`; the first bootstrap resolves the tag to a full commit SHA and creates `Tools/XcodeGen.lock.json`. Later bootstraps fail if the tag resolves to a different SHA.
+
+`script/bootstrap_xcodegen.sh` must:
+
+1. clone `https://github.com/yonaskolb/XcodeGen.git` into ignored `.tools/xcodegen/source` when absent;
+2. fetch only tag `2.46.0`;
+3. resolve the peeled tag commit;
+4. compare it with `resolvedCommit` in the lock file when the lock exists;
+5. write the lock atomically when it does not exist;
+6. build Release with SwiftPM;
+7. print only the absolute path to the resulting `xcodegen` binary on stdout.
+
+The lock has exact keys:
+
+```json
+{
+  "repository": "https://github.com/yonaskolb/XcodeGen.git",
+  "tag": "2.46.0",
+  "resolvedCommit": "40-lowercase-hex-characters"
+}
+```
+
+## 7. Valid helper scripts
+
+### 7.1 `script/generate_project.sh`
 
 ```bash
 #!/usr/bin/env bash
@@ -255,12 +480,19 @@ case "${1:-generate}" in
   generate)
     "$XCODEGEN" generate --spec "$ROOT/project.yml" --project "$ROOT"
     ;;
-  --check|check)
+  check|--check)
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT
-    cp -R "$ROOT/project.yml" "$ROOT/Config" "$ROOT/Apps" "$ROOT/Packages" "$ROOT/Tests" "$TMP/"
+    rsync -a \
+      --exclude '.git' \
+      --exclude '.tools' \
+      --exclude 'build' \
+      --exclude 'ColdStartAppleCollectors.xcodeproj' \
+      "$ROOT/" "$TMP/"
     "$XCODEGEN" generate --spec "$TMP/project.yml" --project "$TMP"
-    diff -ru "$ROOT/ColdStartAppleCollectors.xcodeproj" "$TMP/ColdStartAppleCollectors.xcodeproj"
+    diff -ru \
+      "$ROOT/ColdStartAppleCollectors.xcodeproj" \
+      "$TMP/ColdStartAppleCollectors.xcodeproj"
     ;;
   *)
     echo "usage: $0 [generate|--check]" >&2
@@ -269,38 +501,37 @@ case "${1:-generate}" in
 esac
 ```
 
-If XcodeGen emits user-specific project data, exclude that data from the committed project and from the comparison rather than normalizing it after generation.
-
-### 4.2 `script/test_packages.sh`
+### 7.2 `script/test_packages.sh`
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 packages=(SnapshotProtocol ContactsDomain ContactsCollectorFeature SnapshotValidatorKit)
+
 for package in "${packages[@]}"; do
   echo "==> $package"
   swift test --package-path "$ROOT/Packages/$package" --parallel
- done
+done
 ```
 
-Remove the leading space before `done` when writing the file; shellcheck must pass.
-
-### 4.3 `script/test_apps.sh`
+### 7.3 `script/test_apps.sh`
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED="$ROOT/build/DerivedData"
-ONLY=""
-if [[ "${1:-}" == "--only" ]]; then
-  ONLY="${2:?missing test target after --only}"
+ONLY="${2:-}"
+
+if [[ "${1:-}" == "--only" && -z "$ONLY" ]]; then
+  echo "usage: $0 [--only <test-target>]" >&2
+  exit 2
 fi
 
 run_scheme() {
   local scheme="$1"
-  shift
+  local test_target="$2"
   local args=(
     -project "$ROOT/ColdStartAppleCollectors.xcodeproj"
     -scheme "$scheme"
@@ -310,23 +541,31 @@ run_scheme() {
     test
   )
   if [[ -n "$ONLY" ]]; then
-    args+=("-only-testing:$ONLY")
+    args+=("-only-testing:$test_target")
   fi
-  xcodebuild "${args[@]}" "$@"
+  xcodebuild "${args[@]}"
 }
 
-if [[ -z "$ONLY" || "$ONLY" == ContactsCollectorTests ]]; then
-  run_scheme ContactsCollector
+if [[ -z "$ONLY" || "$ONLY" == "ContactsCollectorTests" ]]; then
+  run_scheme ContactsCollector ContactsCollectorTests
 fi
-if [[ -z "$ONLY" || "$ONLY" == SnapshotValidatorTests ]]; then
-  run_scheme SnapshotValidator
+if [[ -z "$ONLY" || "$ONLY" == "SnapshotValidatorTests" ]]; then
+  run_scheme SnapshotValidator SnapshotValidatorTests
 fi
-if [[ -z "$ONLY" || "$ONLY" == ContactsCollectorUITests ]]; then
-  run_scheme ContactsCollectorTestHost
+if [[ -z "$ONLY" || "$ONLY" == "ContactsCollectorUITests" ]]; then
+  run_scheme ContactsCollectorTestHost ContactsCollectorUITests
+fi
+
+if [[ -n "$ONLY" && \
+      "$ONLY" != "ContactsCollectorTests" && \
+      "$ONLY" != "SnapshotValidatorTests" && \
+      "$ONLY" != "ContactsCollectorUITests" ]]; then
+  echo "unknown test target: $ONLY" >&2
+  exit 2
 fi
 ```
 
-### 4.4 `script/build_and_run.sh`
+### 7.4 `script/build_and_run.sh`
 
 ```bash
 #!/usr/bin/env bash
@@ -334,9 +573,18 @@ set -euo pipefail
 MODE="${1:-run}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET="${APP_TARGET:-ContactsCollector}"
+
 case "$TARGET" in
-  ContactsCollector|SnapshotValidator) ;;
-  *) echo "unsupported APP_TARGET: $TARGET" >&2; exit 2 ;;
+  ContactsCollector)
+    SUBSYSTEM="com.jordanschwartz.gbrain.coldstart.contacts"
+    ;;
+  SnapshotValidator)
+    SUBSYSTEM="com.jordanschwartz.gbrain.coldstart.validator"
+    ;;
+  *)
+    echo "unsupported APP_TARGET: $TARGET" >&2
+    exit 2
+    ;;
 esac
 
 DERIVED="$ROOT/build/DerivedData"
@@ -352,40 +600,49 @@ APP="$DERIVED/Build/Products/Debug/$TARGET.app"
 BIN="$APP/Contents/MacOS/$TARGET"
 
 case "$MODE" in
-  run) /usr/bin/open -n "$APP" ;;
-  --debug|debug) lldb -- "$BIN" ;;
-  --logs|logs)
+  run)
+    /usr/bin/open -n "$APP"
+    ;;
+  debug|--debug)
+    lldb -- "$BIN"
+    ;;
+  logs|--logs)
     /usr/bin/open -n "$APP"
     /usr/bin/log stream --info --style compact --predicate "process == \"$TARGET\""
     ;;
-  --telemetry|telemetry)
+  telemetry|--telemetry)
     /usr/bin/open -n "$APP"
-    /usr/bin/log stream --info --style compact --predicate "subsystem == \"com.jordanschwartz.gbrain.coldstart.${TARGET == ContactsCollector ? contacts : validator}\""
+    /usr/bin/log stream --info --style compact --predicate "subsystem == \"$SUBSYSTEM\""
     ;;
-  --verify|verify)
+  verify|--verify)
     /usr/bin/open -n "$APP"
     sleep 1
     pgrep -x "$TARGET" >/dev/null
     ;;
-  *) echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2; exit 2 ;;
+  *)
+    echo "usage: $0 [run|--debug|--logs|--telemetry|--verify]" >&2
+    exit 2
+    ;;
 esac
 ```
 
-The shell expression inside the telemetry predicate is illustrative and is not valid Bash. Implement it with an explicit `if` before the `case`:
+`.codex/environments/environment.toml`:
 
-```bash
-if [[ "$TARGET" == ContactsCollector ]]; then
-  SUBSYSTEM="com.jordanschwartz.gbrain.coldstart.contacts"
-else
-  SUBSYSTEM="com.jordanschwartz.gbrain.coldstart.validator"
-fi
+```toml
+# THIS IS AUTOGENERATED. DO NOT EDIT MANUALLY
+version = 1
+name = "cold-start-apple-collectors"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./script/build_and_run.sh"
 ```
 
-Then use `$SUBSYSTEM` in the telemetry case. The committed script must pass `bash -n` and shellcheck.
-
-### 4.5 `script/verify_release.sh`
-
-This script runs exactly:
+### 7.5 `script/verify_release.sh`
 
 ```bash
 #!/usr/bin/env bash
@@ -394,8 +651,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED="$ROOT/build/ReleaseDerivedData"
 
 "$ROOT/script/generate_project.sh" --check
+"$ROOT/script/validate_fixtures.py"
 "$ROOT/script/test_packages.sh"
 "$ROOT/script/test_apps.sh"
+"$ROOT/script/verify_project_shape.sh"
 "$ROOT/script/scan_forbidden_apis.sh"
 
 for scheme in ContactsCollector SnapshotValidator; do
@@ -406,7 +665,7 @@ for scheme in ContactsCollector SnapshotValidator; do
     -derivedDataPath "$DERIVED" \
     -destination 'platform=macOS,arch=arm64' \
     clean build
- done
+done
 
 "$ROOT/script/inspect_entitlements.sh" \
   "$DERIVED/Build/Products/Release/ContactsCollector.app" \
@@ -417,50 +676,11 @@ for scheme in ContactsCollector SnapshotValidator; do
 "$ROOT/script/check_docs_and_attribution.sh"
 ```
 
-Remove leading spaces before `done` in the committed shell file and require `bash -n` plus shellcheck for every script.
+Every shell script must pass both `bash -n` and ShellCheck. ShellCheck is a local development prerequisite and is not shipped.
 
-## 5. Wire Schemas
+## 8. Forbidden API contract
 
-The six schema files are human- and machine-reviewable contracts. They use JSON Schema Draft 2020-12 with `additionalProperties: false` at every object. They are not the only runtime validator; strict Swift decoding remains authoritative inside the apps.
-
-### 5.1 Fixture validation without a runtime dependency
-
-`script/validate_fixtures.py` is a narrow standard-library validator, not a generic JSON Schema implementation. It:
-
-- loads every checked-in JSON fixture;
-- verifies exact key sets and primitive/container types for the six known schemas;
-- verifies integer ranges, lowercase SHA-256 fields, UUIDs, fixed enum values, X9.63 public-key Base64 length, and RFC 3339 millisecond timestamps;
-- iterates every NDJSON line and rejects blank or unterminated lines;
-- verifies canonical reserialization using sorted keys and compact separators;
-- exits nonzero on the first mismatch with file and line number.
-
-The Swift test suites independently decode the same fixtures and compare golden canonical bytes. A schema-file change without matching Swift fixtures/tests fails `check_docs_and_attribution.sh` by hash inventory.
-
-### 5.2 Minimum request schema
-
-`collector-request-v1.schema.json` requires exactly:
-
-```json
-{
-  "schemaVersion": 1,
-  "runId": "UUID string",
-  "domain": "contacts",
-  "requestedAt": "UTC RFC 3339 with milliseconds",
-  "window": {"start": null, "end": null},
-  "suggestedScopeIds": ["string"],
-  "limits": {"maxRecords": "integer 1 through 100000"}
-}
-```
-
-The actual schema file expresses these as JSON Schema types, enums, formats/patterns, minimum, maximum, required, and `additionalProperties: false`; the prose values above are not copied literally into fixture JSON.
-
-### 5.3 Contacts record schema
-
-`contacts-record-v1.schema.json` includes every field in the normative contract, requires `notesStatus` to equal `excludedByDesign`, prohibits image/note byte fields by `additionalProperties: false`, and requires lowercase 64-character `contentHash` and `snapshotRecordId`.
-
-## 6. Forbidden-API Scan Contract
-
-`script/scan_forbidden_apis.sh` scans these production roots only:
+`script/scan_forbidden_apis.sh` scans production Swift sources under:
 
 ```text
 Apps/ContactsCollector
@@ -488,93 +708,192 @@ NSXPCConnection
 Process
 ```
 
-The script permits `CNContactImageDataAvailableKey` and `imageDataAvailable`. It rejects generic `Process` only in Swift production sources, not shell scripts, tests, docs, or fixtures.
+`CNContactImageDataAvailableKey` and `imageDataAvailable` are permitted. `Process` is rejected only in production Swift, not shell scripts, tests, fixtures, or documentation.
 
-Binary mode runs `nm -m`, `otool -L`, and `strings` on each main executable and every nested Mach-O file. It rejects mutation/script/network/test-host symbols and any nested executable not listed in an exact checked-in binary allowlist.
+Binary mode inspects the main executable and every nested Mach-O file with `nm -m`, `otool -L`, and `strings`. It rejects Contacts mutation symbols, script execution, network client/server symbols, test-host names, and any nested executable outside a checked-in exact allowlist.
 
-## 7. GitHub Actions Pinning Procedure
+## 9. Entitlement verification
 
-The workflow is not committed with floating action tags.
+`script/inspect_entitlements.sh` runs:
+
+```bash
+codesign -dvvv --entitlements :- <app>
+spctl -a -vv <app>
+```
+
+It parses the signed entitlements and requires exact sets:
+
+```text
+ContactsCollector:
+  com.apple.security.app-sandbox = true
+  com.apple.security.personal-information.addressbook = true
+  com.apple.security.files.user-selected.read-write = true
+
+SnapshotValidator:
+  com.apple.security.app-sandbox = true
+  com.apple.security.files.user-selected.read-only = true
+```
+
+It rejects network client/server, Apple Events, application groups, explicit Keychain groups, Contacts notes, calendar, location, camera, microphone, Photos, Bluetooth, USB, and `get-task-allow` in Release.
+
+## 10. JSON schema inventory
+
+All schema files use JSON Schema Draft 2020-12. Every object declares `additionalProperties: false`.
+
+### `collector-request-v1.schema.json`
+
+Required exact fields:
+
+```text
+schemaVersion = 1
+runId = UUID
+ domain = contacts
+requestedAt = UTC RFC 3339 with milliseconds
+window.start = null
+window.end = null
+suggestedScopeIds = array of strings
+limits.maxRecords = integer 1...100000
+```
+
+### `collector-enrollment-v1.schema.json`
+
+Required exact fields mirror `CollectorEnrollmentDocument`, including a 65-byte X9.63 public key encoded as unpadded Base64 and an exact `CodeIdentityClaim`.
+
+### `contacts-record-v1.schema.json`
+
+Required exact fields are the flattened `ContactRecordPayload` fields plus `contentHash`. It requires:
+
+```text
+schemaVersion = 1
+identityMapVersion = 1
+snapshotRecordId = lowercase SHA-256
+contentHash = lowercase SHA-256
+notesStatus = excludedByDesign
+```
+
+It has no note-content, image-data, mutable-state, or arbitrary metadata field.
+
+### `snapshot-manifest-v2.schema.json`
+
+Required exact fields mirror `SnapshotManifest`, with:
+
+```text
+schemaVersion = 2
+domainSchemaVersion = 1
+collector = contacts
+signatureAlgorithm = ecdsa-p256-sha256-der
+```
+
+### `public-receipt-v1.schema.json`
+
+Required exact fields mirror `PublicReceipt`. It has no source-derived string or raw identifier field.
+
+### `validation-receipt-v1.schema.json`
+
+Required exact fields mirror `ValidationReceipt` in the normative contract.
+
+## 11. Fixture validation
+
+`script/validate_fixtures.py` uses only Python's standard library. It is a project-specific validator, not a general JSON Schema engine. It:
+
+- loads every JSON fixture;
+- verifies exact key sets and primitive/container types for the six schemas;
+- validates integer ranges, enum values, UUIDs, lowercase SHA-256, X9.63 Base64 length, and millisecond RFC 3339 timestamps;
+- verifies every NDJSON line is nonblank, newline-terminated, and canonical;
+- recalculates contact `contentHash` values;
+- recalculates manifest/content hashes for snapshot fixtures;
+- exits nonzero with file and line on the first mismatch.
+
+Swift package tests decode the same fixtures and compare checked-in golden canonical bytes and signatures.
+
+## 12. CI action pinning
+
+The workflow must not use a floating action tag.
 
 `script/resolve_github_action_lock.sh`:
 
-1. queries the GitHub API for the commit currently referenced by the reviewed `actions/checkout` release tag selected during Task 16;
-2. requires a full 40-character SHA;
-3. writes repository, release tag, commit SHA, retrieval time, and API response SHA-256 to `Tools/GitHubActions.lock.json`;
-4. requires a human review of the release page and resolved commit before the workflow commit;
-5. on later runs, verifies the tag still resolves to the recorded commit and fails if it moved.
+1. resolves the reviewed `actions/checkout` release tag through the GitHub API;
+2. requires a full 40-character commit SHA;
+3. writes repository, reviewed release tag, resolved SHA, retrieval timestamp, and API-response SHA-256 to `Tools/GitHubActions.lock.json`;
+4. fails on later runs if the tag resolves differently;
+5. requires human review before committing the workflow.
 
-`.github/workflows/ci.yml` uses the full recorded commit SHA in `uses:`. CI runs on a macOS runner and performs:
+`.github/workflows/ci.yml` uses the exact resolved SHA and runs on macOS:
 
 ```text
 validate_fixtures.py
 bootstrap_xcodegen.sh
- generate_project.sh --check
- test_packages.sh
- scan_forbidden_apis.sh
- check_docs_and_attribution.sh
+generate_project.sh --check
+test_packages.sh
+scan_forbidden_apis.sh
+check_docs_and_attribution.sh
 ```
 
-It does not request Contacts permission, run LocalAuthentication, use Secure Enclave production keys, build an automatically signed qualification app, or claim Gate B.
+CI does not request Contacts permission, evaluate LocalAuthentication, create production Secure Enclave keys, automatically sign qualification apps, or claim Gate B.
 
-## 8. Documentation Deliverables
+## 13. Documentation outputs
 
-### 8.1 `LICENSE`
+### `LICENSE`
 
-Use MIT License text with:
+MIT License with:
 
 ```text
 Copyright (c) 2026 Jordan Schwartz and contributors
 ```
 
-Preserve all upstream MIT notices in `NOTICE` and file headers for copied or substantially adapted code.
+### `NOTICE`
 
-### 8.2 `README.md`
+Lists every copied or substantially adapted upstream file with repository, revision, original path, copyright notice, license, and local path.
 
-The README states at its beginning:
+### `UPSTREAM.md`
+
+Pins the reviewed Apple PIM revision and records each imported idea/file, local modifications, excluded mutation surface, and future subsystem-review procedure. It forbids generic upstream merges.
+
+### `README.md`
+
+Begins with:
 
 ```text
 Status: synthetic qualification only. Do not use with real Contacts data until a Gate B report for the exact collector build, signing identity, and macOS build is approved.
 ```
 
-It documents build prerequisites, fixed bundle IDs, project generation, local signing config, test commands, read-only code boundary, and explicit non-goals. It does not include instructions for admitting real contacts.
+It documents prerequisites, bundle IDs, project generation, local signing configuration, build/test commands, the read-only code boundary, and non-goals. It contains no real-data admission instructions.
 
-### 8.3 `SECURITY.md`
+### `SECURITY.md`
 
-Document the same-user confused-deputy threat, user-presence gate, signed-snapshot trust assumptions, lack of confidentiality after export, per-validation collector-app reinspection, excluded APIs, synthetic-data rule, and private vulnerability-reporting contact/process.
+Documents the same-user confused-deputy threat, device-owner authentication, signed-snapshot assumptions, lack of confidentiality after export, per-validation collector-app reinspection, excluded APIs, synthetic-data rule, and private vulnerability-reporting process.
 
-### 8.4 Qualification README
+### `Qualification/Contacts/README.md`
 
-`Qualification/Contacts/README.md` explains that Gate B is a local owner qualification, not a public security certification, and that passing it authorizes only Contacts on the exact recorded build lineage.
+States that Gate B is local owner qualification, not public certification, and authorizes only Contacts on the exact build/signing/macOS lineage recorded in the approved report.
 
-## 9. Plan Coverage Matrix
+## 14. Coverage matrix
 
-| Approved-spec requirement | Implementing task/contract section |
+| Approved requirement | Plan location |
 |---|---|
-| Separate visible Contacts app | Plan Tasks 1 and 8 |
-| Separate validator without Contacts | Plan Tasks 1, 13, 14 |
-| App Sandbox and exact entitlements | Plan Tasks 1 and 16 |
-| No network or Apple Events | Plan Tasks 1, 16, 18 |
-| Strict bounded request | Plan Task 2; Contract §5 |
-| Visible scope review | Plan Task 8 |
-| Fresh device-owner authentication | Plan Task 10; Contract §6 |
-| Security-scoped local root | Plan Task 9 |
-| Immutable raw source cards | Plan Tasks 5 and 6 |
-| Raw/unified identity distinction | Plan Tasks 6 and 7; Contract §§7–8 |
-| Notes/images excluded | Plan Tasks 6, 7, 16 |
-| Conservative reconciliation | Plan Task 4; Contract §10 |
-| Secure Enclave collector key | Plan Task 11; Contract §11 |
-| Collector key/code enrollment | Plan Task 13; Contract §12 |
-| Reinspect collector every validation | Contract §12 |
-| Canonical signed snapshot | Plan Tasks 2, 3, 12; Contract §§3–4 |
-| Signature/path/hash verification before parse | Plan Task 14; Contract §15 |
-| Validator-signed receipt | Plan Task 14; Contract §13 |
-| No production test bypass | Plan Tasks 8, 15, 16; Contract §16 |
-| Synthetic-only Gate B | Plan Tasks 17 and 18 |
-| Byte-stable rerun | Plan Tasks 7, 12, 18 |
-| Semantic source before/after proof | Plan Task 18 |
-| Upstream attribution | Plan Task 17; Appendix §8 |
-| Checked-in schemas | Appendix §5 |
-| No GBrain/other-domain implementation | Global constraints and deferred-work section |
+| separate visible Contacts app | Tasks 1 and 8 |
+| separate validator without Contacts | Tasks 1, 13, and 14 |
+| exact sandbox entitlements | Tasks 1 and 16; Appendix §§4 and 9 |
+| strict bounded request | Task 2; Contract §6 |
+| visible scope review | Task 8 |
+| fresh device-owner authentication | Task 10; Contract §7 |
+| local security-scoped root | Task 9; Contract §14 |
+| immutable raw source cards | Tasks 5 and 6; Contract §9 |
+| raw/unified identity distinction | Tasks 6 and 7; Contract §§8–10 |
+| notes/image bytes excluded | Tasks 6, 7, and 16 |
+| conservative reconciliation | Task 4; Contract §10 |
+| Secure Enclave collector key | Task 11; Contract §12 |
+| collector key/code enrollment | Task 13; Contract §15 |
+| collector app reinspected each validation | Task 14; Contract §16 |
+| canonical signed snapshot | Tasks 2, 3, and 12; Contract §§3–4 and 13 |
+| verify signature/path/hash before parsing | Task 14; Contract §§16 and 18 |
+| validator-signed receipt | Task 14; Contract §17 |
+| no production test bypass | Tasks 8, 15, and 16; Contract §20 |
+| checked-in schemas and fixtures | Tasks 2, 4, 7, 12, and 14; Appendix §§10–11 |
+| synthetic-only Gate B | Tasks 17 and 18; Contract §21 |
+| byte-stable rerun | Tasks 7, 12, and 18 |
+| semantic source before/after proof | Task 18 |
+| upstream attribution | Task 17; Appendix §13 |
+| no other Apple domains or GBrain ingestion | Global constraints |
 
-No approved Contacts requirement is intentionally deferred beyond Gate B. GBrain ingestion remains a separate Gate D plan by design.
+No approved Contacts requirement is deferred beyond Gate B. Calendar, Mail, Messages, and GBrain ingestion remain separate plans by design.
