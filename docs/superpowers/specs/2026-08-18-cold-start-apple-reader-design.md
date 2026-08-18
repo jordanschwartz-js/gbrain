@@ -14,9 +14,9 @@ This revision changes the architecture rather than merely adding warnings:
 
 1. **Reject the reusable headless TCC helper.** A permanently authorized helper that any same-user process can invoke is a confused-deputy boundary. Apple PIM's current helper forwards caller-supplied CLI arguments and output paths to privileged child tools. That is useful general-purpose infrastructure, but it is the wrong trust model for a sensitive one-time import.
 2. **Split permissions by collector.** Contacts, Calendar, and Mail no longer share one process or code-signing identity. Mail's Full Disk Access is isolated from Contacts and Calendar.
-3. **Require visible scope review plus macOS user-presence authentication for every export.** A click is insufficient when an agent may have UI automation. Immediately before collection, the app must authenticate the device owner through LocalAuthentication with no authentication-reuse window.
-4. **Cryptographically sign completed snapshots.** Plain SHA-256 files detect corruption but do not authenticate who produced a snapshot. GBrain accepts only snapshots signed by an enrolled collector key and matching the approved request digest.
-5. **Narrow the first shippable milestone to supported Apple frameworks.** Contacts and Calendar form the core release. Mail remains a separately qualified private-schema module. Messages remains a user-managed external file export until its Full Disk Access, process-argument privacy, output-format, and GPL boundaries are separately accepted.
+3. **Require visible scope review plus macOS user-presence authentication for every collector export.** A click is insufficient when an agent may have UI automation. Immediately before collection, the app must authenticate the device owner through LocalAuthentication with no authentication-reuse window.
+4. **Cryptographically sign every collector-produced completed snapshot.** Plain SHA-256 files detect corruption but do not authenticate who produced a snapshot. GBrain accepts a collector snapshot only when its canonical manifest is signed by an enrolled collector key and matches the approved request digest.
+5. **Narrow the first shippable milestone to supported Apple frameworks.** Contacts and Calendar form the core release. Mail remains a separately qualified private-schema module. Messages remains a user-managed external file import until its Full Disk Access, process-argument privacy, output-format, and GPL boundaries are separately accepted.
 6. **Treat source identifiers as local locators, not permanent identities.** Every domain carries an identity-map version, reconciliation evidence, and fail-closed ambiguity handling.
 7. **Replace a normal Apple PIM fork with a minimal derivative repository.** Upstream lineage remains explicit, but unrelated write, MCP, SMTP, OpenClaw, and mail-channel code never enters the production tree.
 
@@ -27,8 +27,8 @@ The selected design is therefore a **split, user-present, signed snapshot system
 | Prior design claim | Skeptical finding | Revised decision |
 |---|---|---|
 | One signed helper app can safely own all Apple permissions | A reusable helper is callable by other same-user processes and concentrates Contacts, Calendar, and Full Disk Access | Separate visible collectors; no unattended production helper |
-| A visible confirmation button proves human approval | An agent with Accessibility or computer-control capability may activate ordinary UI | Require `LAPolicy.deviceOwnerAuthentication` immediately before each export, with authentication reuse disabled |
-| Hashes make the exported snapshot trustworthy | An attacker who can edit the snapshot can edit its hash file too | Sign the canonical manifest and file digests with an enrolled app-private key |
+| A visible confirmation button proves human approval | An agent with Accessibility or computer-control capability may activate ordinary UI | Require `LAPolicy.deviceOwnerAuthentication` immediately before each collector export, with authentication reuse disabled |
+| Hashes make a collector snapshot trustworthy | An attacker who can edit the snapshot can edit its hash file too | Sign the canonical manifest and declared content-file digests with an enrolled app-private key |
 | The reader is read-only because it exposes no write commands | EventKit has no read-only authorization level; Calendar full access permits reads and writes. Contacts and Calendar sandbox entitlements are also read-write capabilities | State the real boundary: read-write OS grant, but immutable/read-only code surface, separate target, sandbox, no write APIs, user presence, and runtime qualification |
 | `eventIdentifier` plus occurrence start is a durable calendar identity | Apple says a full sync can invalidate `calendarItemIdentifier`, and moving an event can change `eventIdentifier` | Preserve all local locators plus recurrence metadata and reconcile only on a unique strong fingerprint |
 | A Contacts identifier is a durable person key | Unified contacts are temporary views; a unified fetch may return a different identifier, and identifiers are device-local | Enumerate raw source cards, preserve container context, record unified views as locators, and maintain an explicit alias map |
@@ -116,9 +116,9 @@ The existing product behavior remains authoritative:
 - a fully unsandboxed malicious process that can already read arbitrary files and replace the signed validator or its enrolled trust state;
 - proving that the Mac's local Apple stores are complete replicas of iCloud or every Apple device.
 
-TCC protects the source stores, but data exported to a normal user-readable folder no longer has the source store's TCC protection. V1 mitigates that residual risk with minimum scope, local-only storage, restrictive permissions, no synced folder, signed manifests, and short retention. It does not claim confidentiality from arbitrary same-user malware after export.
+TCC protects the source stores, but data exported to a normal user-readable folder no longer has the source store's TCC protection. V1 mitigates that residual risk with minimum scope, local-only storage, restrictive permissions, no synced folder, signed manifests for collector output, and short retention. It does not claim confidentiality from arbitrary same-user malware after export.
 
-Snapshot signatures protect against tampering only while the attacker cannot replace the validator or its enrolled collector keys. They do not protect a deliberately compromised GBrain installation.
+Collector signatures protect against tampering only while the attacker cannot replace the validator or its enrolled collector keys. They do not protect a deliberately compromised GBrain installation. User-supplied external exports, including Messages files, have provenance and hashes but no collector-authenticity claim.
 
 ## Security and correctness invariants
 
@@ -138,9 +138,9 @@ The implementation is acceptable only if all of these properties are falsifiably
 12. The collector writes only to its application container and the one user-selected snapshot root.
 13. Production Contacts and Calendar targets have no network client or server entitlement and no application-level network feature.
 14. GBrain receives no Contacts, Calendar, Mail Automation, or Full Disk Access grant.
-15. Every finalized snapshot is signed by the producing collector over the canonical request digest, manifest, and file hashes.
-16. GBrain verifies the enrolled collector key, signature, schema, hashes, request digest, and code-identity policy before parsing records.
-17. GBrain ignores incomplete or unsigned runs.
+15. Every collector-produced finalized snapshot is signed over its canonical manifest, which authenticates the request, effective scope, code identity, status, coverage, and declared content-file digests.
+16. GBrain verifies the enrolled collector key, signature, schema, hashes, request digest, and code-identity policy before parsing collector records.
+17. GBrain ignores incomplete, unsigned, or invalidly signed collector runs and never labels an external user-supplied file as collector-authenticated.
 18. Any LLM-based enrichment runs without tools, network, shell, collector authority, or direct GBrain write authority; it returns a schema-validated draft for deterministic review.
 19. Real personal data is admitted separately by domain only after that domain's synthetic qualification gate passes.
 
@@ -156,9 +156,9 @@ This is the prior design: one signed helper app owns Contacts, Calendar, Mail, a
 
 ### Option 2: Separate user-present collectors with signed snapshots
 
-Contacts, Calendar, and Mail use separate application targets. Each collector is visible, one-shot, scope-bounded, requires device-owner authentication, and signs its completed snapshot. Messages is a user-managed external file export step.
+Contacts, Calendar, and Mail use separate application targets. Each collector is visible, one-shot, scope-bounded, requires device-owner authentication, and signs its completed snapshot. Messages is a user-managed external file import step.
 
-**Security effect:** sharply reduces ambient authority, resists ordinary UI automation, detects snapshot tampering, and prevents silent use by an agent. A Mail compromise does not inherit Contacts or Calendar access. Supported framework readers can ship without private-schema modules.
+**Security effect:** sharply reduces ambient authority, resists ordinary UI automation, detects collector-snapshot tampering, and prevents silent use by an agent. A Mail compromise does not inherit Contacts or Calendar access. Supported framework readers can ship without private-schema modules.
 
 **Costs:** more targets, more first-use permission prompts, per-run authentication, key enrollment and rotation, a slightly less automated cold-start experience, and additional release/qualification work.
 
@@ -203,15 +203,15 @@ GBrain cold-start  ────────────────────�
                                       Signed Snapshot Validator / Importer
                                       enrolled collector public keys
                                                        ▲
-                                                       │ signed, hash-verified run folder
+                                                       │ signed, hash-verified collector run
              ┌─────────────────────────────────────────┼────────────────────────┐
              │                                         │                        │
-             │ scope UI + LocalAuth                    │ scope UI + LocalAuth    │ user-managed export
+             │ scope UI + LocalAuth                    │ scope UI + LocalAuth    │ user-managed file
              ▼                                         ▼                        ▼
 ContactsCollector.app                      CalendarCollector.app       imessage-exporter output
 App Sandbox                                App Sandbox                  external GPL boundary
-Contacts entitlement                       Calendar entitlement         no GBrain-owned FDA path
-no network entitlement                     no network entitlement       pinned file format
+Contacts entitlement                       Calendar entitlement         external-file provenance
+no network entitlement                     no network entitlement       no collector signature
              │                                         │                        │
              ▼                                         ▼                        ▼
       Contacts.framework                           EventKit                TXT snapshot
@@ -299,7 +299,7 @@ The collector must:
 10. require a new authentication for a retry or another domain;
 11. write the effective scope, request digest, and authentication outcome class, but no biometric data, into the private manifest.
 
-Opening a request never starts an export automatically. There is no production preference, environment variable, accessibility label, hidden shortcut, test hook, or command-line flag that disables user-presence authentication.
+Opening a request never starts an export automatically. There is no production preference, environment variable, hidden shortcut, test hook, or command-line flag that disables user-presence authentication.
 
 The collector never receives fingerprint, password, or Apple Watch data. LocalAuthentication returns only success or failure.
 
@@ -327,7 +327,22 @@ The user selects it through the app on first use. GBrain may create it beforehan
 
 ### Why hashes are insufficient
 
-`hashes.sha256` detects accidental corruption only. A process that can modify the snapshot directory can replace both a file and its unkeyed hash.
+An unkeyed digest detects accidental corruption only. A process that can modify the snapshot directory can replace both a content file and an unkeyed hash list.
+
+### Validator trust state
+
+The validator is a signed, sandboxed, visible macOS application with no Apple personal-information entitlements. It owns an app-private trust store. GBrain invokes the validator but does not read or edit its enrolled collector keys directly.
+
+Collector enrollment is a visible validator workflow requiring device-owner authentication. The validator records:
+
+- collector public key;
+- key fingerprint;
+- collector bundle identifier;
+- Team ID;
+- designated requirement or equivalent code-identity policy;
+- enrollment time and validator version.
+
+Changing this trust state requires a new visible, user-authenticated enrollment action.
 
 ### Collector key
 
@@ -336,23 +351,35 @@ Each collector creates its own P-256 signing key on first approved setup:
 - the private key is stored in the collector's app-private Keychain context and is never exported to GBrain;
 - use a non-exportable Secure Enclave-backed key when supported and qualified;
 - the public key and its fingerprint are displayed by the collector;
-- enrollment requires device-owner authentication;
-- the signed validator records the collector public key, bundle identifier, Team ID, and designated requirement in its local trust store;
-- enrolling, replacing, or removing a key is a visible security action requiring device-owner authentication;
+- initial enrollment requires device-owner authentication in both collector and validator workflows;
 - reinstall/key loss creates a new key and requires explicit re-enrollment; it never silently replaces trust.
 
 The implementation plan must choose the exact Security/CryptoKit representation and canonical encoding. The acceptance property is fixed: ordinary GBrain and agent processes cannot obtain the private signing key.
 
+### Authoritative signed structure
+
+Avoid recursive or impossible self-signing.
+
+1. The collector writes the declared content files: `public-receipt.json`, `records.ndjson`, and `errors.ndjson`.
+2. It computes each declared content file's byte length and SHA-256.
+3. It writes `hashes.sha256` as a human-readable convenience list for those declared content files.
+4. It writes `private-manifest.json`, which contains the request digest, effective scope digest, code identity, status, coverage, the authoritative declared-content file table, and the SHA-256 of `hashes.sha256`.
+5. It signs the canonical bytes of `private-manifest.json` and writes the detached signature as `snapshot.sig`.
+6. It writes `COMPLETE` last. `COMPLETE` contains the SHA-256 of the signed `private-manifest.json` and no other authority.
+
+The manifest does not hash or declare itself as a content file. The signature does not sign itself. `COMPLETE` is a terminal marker bound back to the already signed manifest digest.
+
 ### Signed material
 
-The collector signs a canonical digest covering:
+Through the canonical manifest, the signature authenticates:
 
 - request digest;
 - effective scope digest;
 - run ID and domain;
 - collector version and code identity;
 - manifest schema and domain schema versions;
-- every output filename, byte length, and SHA-256;
+- each declared content filename, byte length, and SHA-256;
+- the convenience hash-list digest;
 - status, coverage, counts, warnings, and error summary;
 - start and completion timestamps.
 
@@ -360,22 +387,24 @@ The public key is not trusted merely because it appears inside the snapshot. The
 
 ### Validator behavior
 
-Before parsing any record, the validator:
+Before parsing any collector record, the validator:
 
 1. verifies its own expected build/installation policy;
-2. loads the enrolled collector identity and public key;
-3. validates the collector signature;
-4. validates the request digest expected by GBrain;
-5. validates file hashes and byte lengths;
-6. rejects unknown schemas, duplicate filenames, path traversal, symlinks, hard links, sparse-file surprises, and files outside the run directory;
-7. rejects completed snapshots that contain undeclared files;
-8. records a validation receipt before allowing parsing.
+2. loads the enrolled collector identity and public key from its app-private trust store;
+3. validates the detached signature over the exact canonical manifest bytes;
+4. validates the `COMPLETE` manifest digest;
+5. validates the request digest expected by GBrain;
+6. validates every declared content-file hash and byte length;
+7. validates `hashes.sha256` against the authoritative manifest table;
+8. rejects unknown schemas, duplicate filenames, path traversal, symlinks, hard links, sparse-file surprises, and files outside the run directory;
+9. permits only the fixed protocol files and rejects undeclared content files;
+10. records a signed-validator validation receipt before allowing parsing.
 
-A signature protects integrity and producer authenticity under the stated trust assumptions. It does not encrypt the snapshot.
+A collector signature protects integrity and producer authenticity under the stated trust assumptions. It does not encrypt the snapshot.
 
-## Snapshot protocol
+## Collector snapshot protocol
 
-Each domain writes an independent immutable run directory:
+Each collector domain writes an independent immutable run directory:
 
 ```text
 <snapshot-root>/<run-id>/<domain>/
@@ -394,15 +423,14 @@ Rules:
 - directories are mode `0700`; files are mode `0600`;
 - do not follow symlinks when creating or validating the run;
 - write to temporary names and atomically rename finalized files;
-- finalize all hashes and the signed canonical manifest before writing `COMPLETE`;
-- write `COMPLETE` last;
+- write `COMPLETE` last using the signed manifest digest;
 - never append to a completed snapshot;
-- GBrain ignores any directory without a valid `COMPLETE` marker, valid signature, expected request digest, and matching hashes;
+- GBrain ignores any directory without a valid `COMPLETE` marker, valid enrolled-key signature, expected request digest, and matching content hashes;
 - records use a domain schema version independent of the top-level manifest version;
 - private manifests may contain local opaque identifiers;
 - public receipts contain counts, code identity, signature-key fingerprint, hashes, windows, status, and hashed scope identifiers, but no names, addresses, phone numbers, subjects, bodies, or calendar titles.
 
-### Common outcome model
+### Common collector outcome model
 
 ```json
 {
@@ -420,6 +448,8 @@ Rules:
 ```
 
 `complete` means the collector exhausted the approved scope under a known schema and no result limit was hit. It does not mean the local Mac contains all iCloud or device history.
+
+External user-supplied files, including Messages exports, do not use this collector-authentication protocol. They use the existing explicit file-import trust class with user selection, immutable source hashes, parser-version receipts, and `provenance: external-user-supplied`.
 
 ## Contacts Collector
 
@@ -472,7 +502,8 @@ Preserve where available:
 - birthday and other labeled dates;
 - relations and social/instant-message handles where available;
 - person/organization type;
-- image-present boolean.
+- image-present boolean;
+- `notesStatus: excludedByDesign`.
 
 V1 excludes:
 
@@ -491,7 +522,8 @@ For each logical record, preserve:
 identityMapVersion
 sorted raw locators: containerIdentifier + rawContactIdentifier
 unified locator observed in this run
-strong normalized fingerprint: verified emails + normalized phones + name/org context
+strong normalized identifiers: exact normalized emails and phone numbers
+supplementary context: name and organization, never sufficient by themselves
 content hash
 ```
 
@@ -499,10 +531,10 @@ Rerun matching order:
 
 1. exact raw locator set;
 2. exact overlap of a raw locator with one prior record;
-3. one unique strong fingerprint match;
+3. one unique match on strong normalized email/phone identifiers, with supplementary context used only to detect contradictions;
 4. otherwise create an ambiguity record for human review.
 
-Never auto-merge by display name alone. Never silently replace an old locator with a new one without recording an alias transition.
+Never auto-merge by display name or organization alone. Never silently replace an old locator with a new one without recording an alias transition.
 
 ### Contacts acceptance gate
 
@@ -743,6 +775,22 @@ Messages starts as **user-managed file import**. A separately installed, immutab
 
 V1 may ingest output produced by a separately managed executable, but the project must not copy, link, vendor, or bundle its implementation into the MIT collector repository without a deliberate license review and acceptance of the resulting obligations. This document does not make a legal conclusion about every distribution arrangement.
 
+### Trust class
+
+A Messages export is an **external user-supplied file**, not a collector-authenticated snapshot.
+
+GBrain records:
+
+- explicit user file selection;
+- exporter name and claimed version;
+- executable hash when available;
+- source-file hashes and byte lengths;
+- parser version;
+- private scope receipt;
+- `provenance: external-user-supplied`.
+
+It does not claim the file came from an enrolled collector key or that the exporter identity is cryptographically proven by the file itself.
+
 ### Full Disk Access and argument privacy
 
 Gate X must establish the exact TCC responsible-process identity for the selected launch path. The project does not instruct the user to grant broad Full Disk Access to Terminal as an unreviewed default.
@@ -848,17 +896,19 @@ No collector automatically checks GitHub, downloads a binary, updates itself, or
 
 ## GBrain integration and prompt-injection isolation
 
-The GBrain side has no Apple grants and performs this deterministic sequence:
+The GBrain side has no Apple grants and performs this deterministic sequence for collector snapshots:
 
 1. create a bounded request descriptor;
 2. open the appropriate visible collector;
 3. tell the user what permission, scope, and LocalAuthentication action will be requested;
-4. wait for a completed snapshot rather than polling protected Apple stores;
-5. verify collector enrollment, signature, request digest, code identity policy, `COMPLETE`, schemas, hashes, paths, and coverage;
-6. parse records with deterministic parsers that do not execute content;
+4. wait for a completed collector snapshot rather than polling protected Apple stores;
+5. invoke the signed validator to verify collector enrollment, signature, request digest, code identity policy, `COMPLETE`, schemas, hashes, paths, and coverage;
+6. parse only validated records with deterministic parsers that do not execute content;
 7. run existing filtering, deduplication, significance, entity linking, provenance, and sample review;
 8. write only approved normalized Markdown to stable local GBrain sources;
 9. record an import receipt and schedule raw-snapshot cleanup.
+
+External user-supplied files use a separate explicit file-import path. They are hashed, version-receipted, and labeled with external provenance, but never upgraded to collector-authenticated status.
 
 Imported content never enters the collector request or validator control plane.
 
@@ -878,13 +928,14 @@ The collector never calls GBrain database operations itself.
 
 Every domain follows these rules:
 
-1. **Unavailable is not empty.** Permission denial, missing local synchronization, schema mismatch, inaccessible store, invalid signature, untrusted key, or parser incompatibility produces `unavailable` or `error`.
+1. **Unavailable is not empty.** Permission denial, missing local synchronization, schema mismatch, inaccessible store, invalid collector signature, untrusted collector key, or parser incompatibility produces `unavailable` or `error`.
 2. **Partial is explicit.** Missing body files, unreadable content, result limits, changed source files, unsupported records, or incomplete segments survive into the receipt.
 3. **Ambiguity stops automatic reconciliation.** The system never selects the first matching account, contact, calendar event, message copy, or chat.
 4. **No semantic fallback.** A failed Mail SQLite read never becomes JXA. A failed structured Messages parse becomes a raw transcript, not invented structure.
 5. **Limits are visible.** Returned count, observed count, segment/window, and continuation state are explicit.
 6. **Cancellation is normal.** User or LocalAuthentication cancellation writes no completed snapshot and is not treated as a collector error.
 7. **Trust changes are explicit.** Unknown or rotated collector keys never auto-enroll.
+8. **External provenance stays external.** Missing collector signatures on user-supplied files are not errors, but those files never receive a collector-authenticity claim.
 
 ## Privacy and data lifecycle
 
@@ -895,10 +946,10 @@ Every domain follows these rules:
 - Clipboard use is prohibited.
 - Raw attachment bytes are not copied in V1.
 - `doctor` may warn when FileVault is disabled but does not alter system settings.
-- GBrain deletes a raw snapshot after successful reviewed import or after seven days, whichever occurs first, unless the user explicitly retains it.
+- GBrain deletes a raw snapshot or external export after successful reviewed import or after seven days, whichever occurs first, unless the user explicitly retains it.
 - Public receipts and normalized accepted Markdown may remain; private raw records and private identity maps follow the user's local backup policy.
 - Cleanup is receipt-driven and never deletes Apple source data.
-- Snapshot signatures provide integrity and provenance, not confidentiality.
+- Collector signatures provide integrity and provenance, not confidentiality.
 
 ## Qualification strategy
 
@@ -914,7 +965,8 @@ For every release build:
 - verify no generic `osascript`, shell, raw SQL input, or arbitrary subprocess surface;
 - inspect dynamic libraries and embedded tools;
 - verify LocalAuthentication cannot be bypassed or reused in production;
-- verify the signing private key is not exportable through collector or GBrain APIs;
+- verify the collector signing private key is not exportable through collector or GBrain APIs;
+- verify manifest canonicalization and detached-signature test vectors;
 - verify no unreviewed upstream file or dependency drift;
 - validate every JSON/NDJSON record against checked-in schemas;
 - fail CI if attribution or `UPSTREAM.md` is stale.
@@ -923,7 +975,7 @@ Forbidden API checks are defense in depth, not proof by themselves. Runtime and 
 
 ### Runtime read-only and user-presence evidence
 
-For each domain:
+For each collector domain:
 
 - create only fictional deterministic source records;
 - capture an independent semantic before-state;
@@ -935,21 +987,22 @@ For each domain:
 - capture an independent semantic after-state;
 - compare source records and user-visible state;
 - inspect the final signed binary, not only a debug build;
-- prove denial, cancellation, interruption, malformed-request, tampered-snapshot, wrong-key, and key-rotation behavior.
+- prove denial, cancellation, interruption, malformed-request, tampered-snapshot, wrong-key, undeclared-file, canonicalization, and key-rotation behavior.
 
 Filesystem metadata changes caused by Apple daemons or cache reads are not automatically source mutations. Acceptance is based on API-enforced read-only database opens where applicable, absence of write code, process-attributed tracing, and unchanged semantic records.
 
 ### Seam tests
 
-The qualification suite tests the entire chain:
+The qualification suite tests the entire collector chain:
 
 ```text
 request document
 → visible effective-scope UI
 → LocalAuthentication
 → framework/private-store reader
-→ snapshot writer
-→ collector signature
+→ content files
+→ canonical manifest
+→ detached collector signature
 → validator trust and hash checks
 → deterministic parser
 → isolated semantic worker if needed
@@ -957,6 +1010,8 @@ request document
 ```
 
 Handler-only tests are insufficient. PyApple's history includes a case where correct lower-level behavior shipped inert because both front ends forced a default. The project therefore tests every production seam and derives action lists from one authoritative schema rather than duplicating hand-maintained registries.
+
+External-file adapters receive their own end-to-end fixtures and provenance tests; they do not reuse collector-signature assertions.
 
 ### Supply-chain checks
 
@@ -983,7 +1038,7 @@ Pass only after recurrence, all-day, move/sync identity, full-access disclosure,
 
 ### Gate D: Core GBrain integration qualification
 
-Pass only when signed snapshots validate and produce deterministic staging Markdown without granting GBrain Apple permissions or allowing imported content to control tools.
+Pass only when collector snapshots validate and produce deterministic staging Markdown without granting GBrain Apple permissions or allowing imported content to control tools.
 
 ### Gate M0: Mail feasibility
 
@@ -999,7 +1054,7 @@ Establish the exact exporter release, Full Disk Access attribution, process-argu
 
 ### Gate X1: Messages parser qualification
 
-Pass only after pinning the exporter artifact and qualifying the output parser on synthetic fixtures. X0 does not imply X1.
+Pass only after pinning the exporter artifact and qualifying the output parser and external-provenance receipt on synthetic fixtures. X0 does not imply X1.
 
 ### Real-data admission
 
@@ -1012,19 +1067,20 @@ After the corresponding collectors are qualified, update the existing draft skil
 1. replace direct Apple PIM CLI installation with visible collector request/export steps;
 2. remove command allowlists as the primary safety boundary;
 3. require LocalAuthentication immediately before each collector export;
-4. require signed snapshots and enrolled collector-key validation;
-5. describe Calendar full access honestly rather than calling the OS permission read-only;
-6. omit Contacts notes;
-7. replace durable-ID claims with versioned locator/reconciliation behavior;
-8. use separate Contacts and Calendar phases/app identities;
-9. keep Mail disabled until Gate M1 passes for the exact local schema;
-10. remove Mail `--engine auto` and every JXA fallback;
-11. use stable local account UUID selection and fail closed on ambiguity;
-12. keep Messages user-managed until Gate X0 chooses an accepted launch/privacy boundary;
-13. preserve raw Messages transcripts and fail closed on parser drift;
-14. add request digest, code identity, schema fingerprint, collector-key fingerprint, signature, output hashes, and coverage to Phase 0 receipts;
-15. isolate any LLM enrichment from tools and direct writes;
-16. preserve all existing consent, sampling, review, provenance, no-deletion, and stable-source-repository rules.
+4. require signed collector snapshots and enrolled collector-key validation;
+5. keep external user-supplied files in a distinct provenance class;
+6. describe Calendar full access honestly rather than calling the OS permission read-only;
+7. omit Contacts notes;
+8. replace durable-ID claims with versioned locator/reconciliation behavior;
+9. use separate Contacts and Calendar phases/app identities;
+10. keep Mail disabled until Gate M1 passes for the exact local schema;
+11. remove Mail `--engine auto` and every JXA fallback;
+12. use stable local account UUID selection and fail closed on ambiguity;
+13. keep Messages user-managed until Gate X0 chooses an accepted launch/privacy boundary;
+14. preserve raw Messages transcripts and fail closed on parser drift;
+15. add request digest, code identity, schema fingerprint, collector-key fingerprint, signature, output hashes, and coverage to collector receipts;
+16. isolate any LLM enrichment from tools and direct writes;
+17. preserve all existing consent, sampling, review, provenance, no-deletion, and stable-source-repository rules.
 
 Do not implement these changes on the heavily diverged historical `agent/cold-start-apple` branch. Use a fresh branch from then-current GBrain `master` after the relevant collector contract is qualified.
 
@@ -1032,13 +1088,13 @@ Do not implement these changes on the heavily diverged historical `agent/cold-st
 
 This architecture is too large for one implementation plan. After approval, produce separate plans in this order:
 
-1. **Contacts Collector plan** — repository skeleton, Xcode target, signing, sandbox, request UI, LocalAuthentication, key enrollment, signed snapshot protocol subset, identity model, synthetic fixtures, and Gate B.
+1. **Contacts Collector plan** — repository skeleton, Xcode target, signing, sandbox, request UI, LocalAuthentication, key enrollment, canonical signed snapshot protocol subset, identity model, synthetic fixtures, and Gate B.
 2. **Calendar Collector plan** — separate target, full-access disclosure, segmented EventKit reader, recurrence identity, all-day semantics, LocalAuthentication, signed snapshots, and Gate C.
-3. **Signed Snapshot Validator and GBrain Adapter plan** — trust enrollment, canonical signatures, hashes, path safety, incomplete-run handling, deterministic parsing, staging, receipts, isolated semantic workers, and Gate D.
+3. **Signed Snapshot Validator and GBrain Adapter plan** — app-private trust enrollment, canonical signatures, hashes, path safety, incomplete-run handling, deterministic parsing, staging, receipts, isolated semantic workers, and Gate D.
 4. **Mail feasibility plan** — no importer yet; establish sandbox/FDA behavior and schema inventory for Gate M0.
 5. **Mail Collector plan** — only after M0 approval; exact allowlist, user presence, signed snapshots, two-stage inventory/body flow, and Gate M1.
 6. **Messages X0 plan** — immutable exporter selection, TCC attribution, argument privacy, history suppression, licensing boundary, and manual-versus-wrapper decision.
-7. **Messages parser plan** — only after X0 approval; fixtures, raw preservation, parser drift, and Gate X1.
+7. **Messages parser plan** — only after X0 approval; fixtures, raw preservation, external provenance, parser drift, and Gate X1.
 8. **GBrain skill integration plan** — update `cold-start-apple` only for collectors whose gates have passed.
 
 The next implementation plan, if this revision is approved, is **Contacts Collector only**.
@@ -1048,9 +1104,10 @@ The next implementation plan, if this revision is approved, is **Contacts Collec
 The following decisions require a new design review to change:
 
 - no unattended privileged collector in V1;
-- no export based only on an ordinary UI click;
+- no collector export based only on an ordinary UI click;
 - device-owner authentication for every collector export, with no reuse window;
-- signed snapshots and explicit collector-key enrollment;
+- signed collector snapshots and explicit collector-key enrollment;
+- no representation of external files as collector-authenticated;
 - no single application identity with Contacts, Calendar, and Full Disk Access;
 - no Contacts notes in V1;
 - no Mail Automation/JXA fallback;
